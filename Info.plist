@@ -4,10 +4,11 @@
   <key>CFBundleName</key><string>Composer Bubbles</string>
   <key>CFBundleDisplayName</key><string>Composer Bubbles</string>
   <key>CFBundleExecutable</key><string>ComposerBubbles</string>
+  <key>CFBundleIconFile</key><string>AppIcon.icns</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleIdentifier</key><string>local.composerbubbles.mac</string>
-  <key>CFBundleVersion</key><string>16</string>
-  <key>CFBundleShortVersionString</key><string>1.12.1</string>
+  <key>CFBundleVersion</key><string>18</string>
+  <key>CFBundleShortVersionString</key><string>1.12.3</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>

@@ -55,8 +55,8 @@ The shelf is stored in `~/Library/Application Support/Composer Bubbles/bubbles.j
 
 ## Build
 
-For builds on your own Mac, run `./setup-local-signing.sh` once. It creates a dedicated key in your user keychain. macOS may ask you to authorize that certificate for code signing. This setup is for the person building the app. People installing a signed release only grant Accessibility.
+For builds on your own Mac, run `./setup-local-signing.sh` once. It creates a dedicated key in your user keychain. macOS may ask you to authorize that certificate for code signing. If you downloaded a DMG, follow the [installation and update instructions](../README.md#install-on-your-mac).
 
 With Xcode Command Line Tools installed, run `./build.sh` for your Mac’s architecture or `./build.sh --universal` for Intel and Apple silicon. Use Xcode 26 or later for native glass. Quit the companion before replacing a running build. The script stages and verifies the signed bundle before replacing the output. It checks that future updates satisfy the installed version's signing requirement.
 
-For public distribution, use a **Developer ID Application** identity and notarize the release. Set `COMPOSER_BUBBLES_SIGN_IDENTITY` to that identity's fingerprint when building in a release checkout. The local signing key stays on the development Mac. Apple documents how macOS recognizes updates in [TN3127](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements) and how to [notarize a Developer ID release](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution/).
+For the GitHub beta and Apple-notarized packaging commands, see the [release guide](releases.md).

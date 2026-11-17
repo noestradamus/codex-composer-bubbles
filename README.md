@@ -4,7 +4,21 @@ Save a suggested Codex follow-up for later, right beside the composer. Each chat
 
 Composer Bubbles is an independent macOS companion for the Codex desktop app.
 
-## Build and open the app
+## Install on your Mac
+
+Download the **universal DMG** from [GitHub Releases](https://github.com/noestradamus/codex-composer-bubbles/releases). The companion runs on macOS 13 or later and requires a compatible Codex desktop app.
+
+1. Open the DMG and drag **Composer Bubbles** onto **Applications**. Eject the disk image.
+2. Open **Composer Bubbles** from Applications. The current public beta is signed with the project's own certificate and has not been notarized by Apple. If macOS blocks the first launch and you trust this download, open **System Settings → Privacy & Security → Open Anyway** after trying to launch it. [Apple’s first-open instructions](https://support.apple.com/en-us/102445)
+3. Click the two-bubble icon in the macOS menu bar, choose **Enable Direct Draft Capture…**, then enable **Composer Bubbles** under **Privacy & Security → Accessibility**. Return to Codex.
+
+## Update
+
+Choose **View Releases on GitHub…** from the two-bubble menu. Your installed version appears at the top of that menu. To install a newer version, download its DMG, quit Composer Bubbles, drag the new copy into the same Applications folder, choose **Replace**, then reopen it.
+
+The GitHub betas keep the same bundle ID and signing certificate so macOS can recognize the replacement and retain your Accessibility approval. Your saved bubbles and settings live outside the app. Switching from a separately signed source build, or later switching to an Apple Developer ID release, may require one new grant.
+
+## Build from source
 
 The app targets macOS 13 and later. To build from source, use Xcode 26 or newer, or its Command Line Tools. Run these commands from the repository directory.
 
@@ -44,3 +58,5 @@ Choose **Remove** in a bubble’s preview to delete it. **Undo Remove Bubble** i
 ## Tests
 
 Run `./Tests/run.sh` on macOS to check shelf layout, chat isolation, stable numbering, migration of older shelves, and concurrent saves. The tests use synthetic displays and temporary directories.
+
+Maintainers can find the DMG build and signing steps in the [release guide](docs/releases.md).

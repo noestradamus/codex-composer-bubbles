@@ -14,10 +14,15 @@ scratch_dir="$(mktemp -d "$(dirname "$bundle_dir")/.composer-bubbles-build.XXXXX
 trap 'rm -rf "$scratch_dir"' EXIT
 candidate="$scratch_dir/Composer Bubbles.app"
 
-# A release may be built into a staging folder before the running app is replaced.
-# Check both the installed copy and an existing output before changing either.
+# A normal build must match the installed app. A separate distribution channel
+# can name its last released app, or pass an empty reference for its first build.
+previous_app="${COMPOSER_BUBBLES_PREVIOUS_APP-$project_dir/Composer Bubbles.app}"
+if [[ -n "${COMPOSER_BUBBLES_PREVIOUS_APP:-}" && ! -d "$previous_app" ]]; then
+  echo "Previous release app not found at $previous_app" >&2
+  exit 1
+fi
 references=()
-for reference in "$project_dir/Composer Bubbles.app" "$bundle_dir"; do
+for reference in "$previous_app" "$bundle_dir"; do
   [[ -e "$reference" || -L "$reference" ]] || continue
   if [[ -L "$reference" || ! -f "$reference/Contents/Info.plist" ]] ||
      [[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$reference/Contents/Info.plist")" != "$app_id" ]]; then
@@ -26,6 +31,10 @@ for reference in "$project_dir/Composer Bubbles.app" "$bundle_dir"; do
   fi
   /usr/bin/codesign --verify --strict --all-architectures "$reference"
   if /usr/bin/codesign -dv --verbose=2 "$reference" 2>&1 | /usr/bin/grep -q '^Signature=adhoc$'; then
+    if [[ "$reference" == "${COMPOSER_BUBBLES_PREVIOUS_APP:-}" ]]; then
+      echo "The previous release must have a certificate-backed signature." >&2
+      exit 1
+    fi
     continue  # The initial migration gets a fresh Accessibility grant from the user.
   fi
   references+=("$reference")
@@ -59,7 +68,18 @@ if [[ "${#binaries[@]}" -gt 1 ]]; then
   executable="$scratch_dir/ComposerBubbles"
   xcrun lipo -create "${binaries[@]}" -output "$executable"
 fi
-mkdir -p "$candidate/Contents/MacOS"
+icon_source="$project_dir/Resources/AppIcon.png"
+iconset="$scratch_dir/AppIcon.iconset"
+mkdir -p "$iconset" "$candidate/Contents/Resources" "$candidate/Contents/MacOS"
+for pixels in 16 32 64 128 256 512; do
+  /usr/bin/sips -z "$pixels" "$pixels" "$icon_source" --out "$scratch_dir/$pixels.png" >/dev/null
+done
+cp "$icon_source" "$scratch_dir/1024.png"
+for points in 16 32 128 256 512; do
+  cp "$scratch_dir/$points.png" "$iconset/icon_${points}x${points}.png"
+  cp "$scratch_dir/$((points * 2)).png" "$iconset/icon_${points}x${points}@2x.png"
+done
+/usr/bin/iconutil -c icns "$iconset" -o "$candidate/Contents/Resources/AppIcon.icns"
 install -m 755 "$executable" "$candidate/Contents/MacOS/ComposerBubbles"
 install -m 644 "$project_dir/Info.plist" "$candidate/Contents/Info.plist"
 if ! /usr/bin/codesign --force --options runtime --sign "$identity" --identifier "$app_id" "$candidate"; then

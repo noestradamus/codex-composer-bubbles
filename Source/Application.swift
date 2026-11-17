@@ -481,6 +481,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings.present()
     }
 
+    @objc private func viewReleases() {
+        let releases = URL(string: "https://github.com/noestradamus/codex-composer-bubbles/releases")!
+        if !NSWorkspace.shared.open(releases) {
+            showError("Couldn't open the GitHub releases page in your browser.")
+        }
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         openSettings()
         return false
@@ -515,7 +522,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        menu.addItem(menuItem("Composer Bubbles"))
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        menu.addItem(menuItem(version.map { "Composer Bubbles " + $0 } ?? "Composer Bubbles"))
         let chat = displayedChat
         if let chat {
             let count = store.visible(in: chat).count
@@ -558,6 +566,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(menuItem(isHidden ? "Show Bubbles in Codex" : "Hide Bubbles in Codex", #selector(toggleShelf)))
         menu.addItem(menuItem("Reset Bubble Position", #selector(resetPosition)))
         menu.addItem(.separator())
+        menu.addItem(menuItem("View Releases on GitHub…", #selector(viewReleases)))
         let quit = NSMenuItem(title: "Quit Composer Bubbles", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
         menu.addItem(quit)

@@ -3,6 +3,7 @@
 *.dmg
 *.pkg
 .build/
+dist/
 .composer-bubbles-build.*/
 
 # Local signing material and saved suggestions
