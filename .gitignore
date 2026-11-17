@@ -1,0 +1,16 @@
+.DS_Store
+*.app/
+*.dmg
+*.pkg
+.build/
+.composer-bubbles-build.*/
+
+# Local signing material and saved suggestions
+*.key
+*.pem
+*.p12
+*.pfx
+*.der
+*.keychain*
+bubbles.json
+shelf.lock

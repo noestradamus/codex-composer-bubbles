@@ -1,0 +1,46 @@
+# Composer Bubbles
+
+Save a suggested Codex follow-up for later, right beside the composer. Each chat has its own shelf. Click a bubble to read the full suggestion, or drag it into the composer and edit it before sending.
+
+Composer Bubbles is an independent macOS companion for the Codex desktop app.
+
+## Build and open the app
+
+The app targets macOS 13 and later. To build from source, use Xcode 26 or newer, or its Command Line Tools. Run these commands from the repository directory.
+
+```sh
+./setup-local-signing.sh
+./build.sh
+open "Composer Bubbles.app"
+```
+
+The first command creates a dedicated signing identity in your user keychain and asks macOS to trust its certificate for code signing. Run it once on the Mac where you build. The second command builds for your Mac. Use `./build.sh --universal` to build for both Apple silicon and Intel.
+
+For one-click capture and automatic chat detection, open the Composer Bubbles menu in the macOS menu bar, choose **Enable Direct Draft Capture…**, and turn on **Composer Bubbles** in **System Settings → Privacy & Security → Accessibility**.
+
+To update a local build, quit Composer Bubbles, pull the latest source into the same checkout, run `./build.sh`, then reopen the app. The build script checks the new signature against the previous version. Keeping the same signing identity lets macOS recognize the update and retain the Accessibility grant.
+
+## Save and restore a suggestion
+
+1. In Codex, press **Tab** to accept the suggested follow-up into the draft.
+2. Click **Save** on the floating shelf, or press **⌘⌥⇧B**. Composer Bubbles saves the text in this chat and clears the matching draft when Codex allows it. You can also drag selected text onto **Save**, or copy it and choose **Save Copied Text as Bubble** from the menu bar.
+3. Click a bubble to preview the entire suggestion. Drag it out of the row into the composer to restore it as an editable draft. The bubble stays available for reuse.
+4. If the row overflows, swipe with two fingers or drag sideways across a bubble or a gap. Hold **Option** to drag a bubble’s text in any direction.
+
+If Codex hides the chat ID, the companion can ask you to link the chat. Follow the card and press **⌘⌥L** in Codex, or use your custom shortcut for **Copy chat deep link**. For help with chat detection, one-click capture, and recovering older bubbles, see the [usage guide](docs/usage.md).
+
+## Appearance and placement
+
+Right-click **Save** and choose **Settings…**. Choose short captions or per-chat numbers for the bubbles. The Save control can show a bookmark, text, or both. The shelf uses native clear glass on macOS 26 and later, and supports the system’s **Reduce transparency** setting.
+
+Drag the narrow glass tab to move the shelf. Its position is remembered on that display. In a chat with no saved suggestions, **Save** sits beside the tab. Choose **Reset Bubble Position** from the menu bar to bring the shelf back near the composer.
+
+## Local data
+
+Suggestions are stored in `~/Library/Application Support/Composer Bubbles/bubbles.json`. The app uses Accessibility to locate the active Codex composer. When Codex hides its chat ID, the app can check a displayed chat title against Codex’s local catalog.
+
+Choose **Remove** in a bubble’s preview to delete it. **Undo Remove Bubble** in the menu bar restores the most recent removal in that session.
+
+## Tests
+
+Run `./Tests/run.sh` on macOS to check shelf layout, chat isolation, stable numbering, migration of older shelves, and concurrent saves. The tests use synthetic displays and temporary directories.
