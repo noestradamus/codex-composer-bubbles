@@ -8,8 +8,8 @@ Composer Bubbles is an independent macOS companion for the Codex desktop app.
 
 Download the **universal DMG** from [GitHub Releases](https://github.com/noestradamus/codex-composer-bubbles/releases). The companion runs on macOS 13 or later and requires a compatible Codex desktop app.
 
-1. Open the DMG and drag **Composer Bubbles** onto **Applications**. Eject the disk image.
-2. Open **Composer Bubbles** from Applications. The current public beta is signed with the project's own certificate and has not been notarized by Apple. If macOS blocks the first launch and you trust this download, open **System Settings → Privacy & Security → Open Anyway** after trying to launch it. [Apple’s first-open instructions](https://support.apple.com/en-us/102445)
+1. Open the DMG and drag **Composer Bubbles** onto **Applications**. Eject the disk image. The **universal beta ZIP** contains the same app. If you use it, double-click the ZIP in Finder and move the extracted app into Applications.
+2. Open **Composer Bubbles** from Applications. The beta app is signed with the project's own certificate and has not been notarized by Apple. If macOS blocks it and you trust the download, dismiss the alert, open **System Settings → Privacy & Security**, and scroll to **Security**. Look for **Composer Bubbles** and **Open Anyway**. This option is normally available for about an hour after the blocked launch. [Apple’s first-open instructions](https://support.apple.com/guide/mac-help/mh40617/mac)
 3. Click the two-bubble icon in the macOS menu bar, choose **Enable Direct Draft Capture…**, then enable **Composer Bubbles** under **Privacy & Security → Accessibility**. Return to Codex.
 
 ## Update

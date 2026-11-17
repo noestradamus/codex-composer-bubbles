@@ -13,7 +13,9 @@ COMPOSER_BUBBLES_PREVIOUS_APP="/Volumes/Composer Bubbles/Composer Bubbles.app" \
 
 For the first beta, omit `COMPOSER_BUBBLES_PREVIOUS_APP`. The packager checks that the app satisfies the project's pinned beta signing requirement. A newly created local signing identity will fail this check. Keep the original signing key available for future beta updates.
 
-Tag the tested source commit. Attach the DMG and its SHA-256 file to a GitHub **pre-release**. State that the beta is self-signed and macOS may ask for first-open confirmation. To verify a download, run `shasum -a 256 -c` followed by the checksum filename from the folder containing both files.
+The project certificate signs the app. The beta packager puts that app in a plain read-only DMG and a Finder-compatible ZIP. A local certificate on the outer disk image can cause Gatekeeper to block the mount before Finder can present the app.
+
+Before publishing, open a fresh browser download of the DMG in Finder and confirm that the volume mounts. Test a first launch on a Mac without an existing approval when available. Tag the tested source commit and attach both packages and their SHA-256 files to a GitHub **pre-release**. State that the beta app is self-signed and macOS may ask for a first-launch exception. To verify a download, run `shasum -a 256 -c` followed by its checksum filename from the folder containing both files.
 
 ## Apple-notarized release
 
