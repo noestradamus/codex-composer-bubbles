@@ -1,6 +1,6 @@
 # Composer Bubbles
 
-Save a suggested Codex follow-up for later, right beside the composer. Each chat has its own shelf. Click a bubble to read the full suggestion, or drag it into the composer and edit it before sending.
+Save a Codex composer prediction for later, right beside the composer. Each chat has its own shelf. Click a bubble to read the full prediction, or drag it into the composer and edit it before sending.
 
 Composer Bubbles is an independent macOS companion for the Codex desktop app.
 
@@ -36,7 +36,7 @@ To update a local build, quit Composer Bubbles, pull the latest source into the 
 
 ## Save and restore a suggestion
 
-1. In Codex, press **Tab** to accept the suggested follow-up into the draft.
+1. In Codex, press **Tab** to accept a composer prediction into the draft.
 2. Click **Save** on the floating shelf, or press **⌘⌥⇧B**. Composer Bubbles saves the text in this chat and clears the matching draft when Codex allows it. You can also drag selected text onto **Save**, or copy it and choose **Save Copied Text as Bubble** from the menu bar.
 3. Click a bubble to preview the entire suggestion. Drag it out of the row into the composer to restore it as an editable draft. The bubble stays available for reuse.
 4. If the row overflows, swipe with two fingers or drag sideways across a bubble or a gap. Hold **Option** to drag a bubble’s text in any direction.

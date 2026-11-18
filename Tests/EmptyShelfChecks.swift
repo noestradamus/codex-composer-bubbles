@@ -6,6 +6,7 @@ enum EmptyShelfChecks {
         DisplayPlacementChecks.run()
         WindowPlacementChecks.run()
         WindowInventoryChecks.run()
+        SaveConfirmationChecks.run()
         let displays = [
             NSRect(x: 0, y: 0, width: 1440, height: 900),
             NSRect(x: -1440, y: 50, width: 1440, height: 900),

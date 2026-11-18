@@ -71,6 +71,9 @@ private final class BubblePill: NSButton, NSDraggingSource {
         didSet { updateSpokenLabel(); needsDisplay = true }
     }
     var saveStyle: SaveButtonStyle = .bookmarkAndText { didSet { needsDisplay = true } }
+    var saveConfirmation: CGFloat = 0 {
+        didSet { if saveConfirmation != oldValue { needsDisplay = true } }
+    }
     weak var glassBackdrop: NSView? {
         didSet { if glassBackdrop !== oldValue { needsDisplay = true } }
     }
@@ -129,7 +132,7 @@ private final class BubblePill: NSButton, NSDraggingSource {
             drawSuggestion(nativeBackdrop: glassBackdrop?.superview != nil)
         } else {
             SaveButtonDrawing.draw(in: bounds, style: saveStyle, bubbleStyle: style, highlighted: isHighlighted,
-                                   nativeBackdrop: glassBackdrop?.superview != nil)
+                                   nativeBackdrop: glassBackdrop?.superview != nil, confirmation: saveConfirmation)
         }
     }
 
@@ -702,6 +705,7 @@ final class BubblePanelController {
     private let card = FloatingBubblePanel(label: "Saved suggestion", identifier: "composer-bubbles.preview")
     private let root = BubbleDropZone(frame: .zero)
     private let save = BubblePill(title: "Save", identifier: "composer-bubbles.save")
+    private var confirmationTask: Task<Void, Never>?
     private let move = BubbleMoveHandle()
     private let scroll = BubbleScroll(frame: .zero)
     private let document = BubbleDocument(frame: .zero)
@@ -743,9 +747,38 @@ final class BubblePanelController {
 
     func setSaveStyle(_ next: SaveButtonStyle) {
         guard save.saveStyle != next else { return }
+        if next == .textOnly { stopSaveConfirmation() }
         save.saveStyle = next
         updateControlMaterials()
         if bubbles.isEmpty, let display { layout(on: display) }
+    }
+
+    func showSaveConfirmation() {
+        guard panel.isVisible, save.saveStyle != .textOnly else { return }
+        confirmationTask?.cancel()
+        let initial = save.saveConfirmation
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let start = ProcessInfo.processInfo.systemUptime
+        let hold = SaveButtonDrawing.confirmationHoldUntil
+        let end = reduceMotion ? hold : SaveButtonDrawing.confirmationDuration
+        confirmationTask = Task { @MainActor [weak save] in
+            guard let save else { return }
+            while !Task.isCancelled {
+                let elapsed = ProcessInfo.processInfo.systemUptime - start
+                let level = SaveButtonDrawing.confirmation(at: elapsed, startingFrom: initial, reduceMotion: reduceMotion)
+                save.saveConfirmation = level
+                guard elapsed < end else { return }
+                // Sleep through the hold. Only the fade uses per-frame redraws.
+                let delay = level == 1 && elapsed < hold ? hold - elapsed : min(1.0 / 60, end - elapsed)
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+        }
+    }
+
+    private func stopSaveConfirmation() {
+        confirmationTask?.cancel()
+        confirmationTask = nil
+        save.saveConfirmation = 0
     }
 
     @objc private func updateControlMaterials() {
@@ -951,6 +984,7 @@ final class BubblePanelController {
 
     func hide() {
         guard dragStart == nil else { return }
+        stopSaveConfirmation()
         closePreview()
         if panel.isVisible { panel.orderOut(nil) }
     }

@@ -296,7 +296,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if generation != refreshGeneration && host.focusedWindowID() != windowID { return }
             switch outcome ?? .choices(nil) {
             case .captured(let surface, let text):
-                guard persist(text, in: surface.chatKey) else { return }
+                guard saveAndRefresh(text, in: surface.chatKey, from: windowID) else { return }
                 // Clearing occurs only after a durable save. The worker rechecks the
                 // original editor, chat and text even if another edit arrived meanwhile.
                 host.clearDraft(text, in: surface) { [weak self] cleared in
@@ -317,12 +317,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func saveText(_ text: String, in windowID: ShelfWindowID) -> Bool {
         guard let chat = currentChat(in: windowID) else { return beginLinkRequest(.selectedText(text), for: windowID) }
         if let shown = shelves[windowID]?.chat, shown != chat { refresh(); return false }
-        return persist(text, in: chat)
+        return saveAndRefresh(text, in: chat, from: windowID)
     }
 
-    private func persist(_ text: String, in chat: String) -> Bool {
+    private func persist(_ text: String, in chat: String, from windowID: ShelfWindowID) throws {
+        try store.save(text, in: chat)
+        shelves[windowID]?.panel.showSaveConfirmation()
+    }
+
+    private func saveAndRefresh(_ text: String, in chat: String, from windowID: ShelfWindowID) -> Bool {
         do {
-            try store.save(text, in: chat)
+            try persist(text, in: chat, from: windowID)
             lastStatus = nil
             refresh()
             return true
@@ -451,14 +456,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .assignEarlier(let id):
                 try store.assign(id, to: chat)
             case .selectedText(let text):
-                try store.save(text, in: chat)
+                try persist(text, in: chat, from: windowID)
             case .currentDraft(let original):
                 guard let text = try host.read(in: windowID, { try $0.draftForLink(in: request.context) }),
                       original == text, let confirmed = host.read(in: windowID, { $0.acceptCopiedChat(chat, for: request.context) }) ?? nil else {
                     showError("The draft or chat changed. Click Save again to keep the current draft.")
                     return
                 }
-                try store.save(text, in: chat)
+                try persist(text, in: chat, from: windowID)
                 if confirmed == .currentChat {
                     _ = host.read(in: windowID) { host in
                         guard let surface = host.current(), surface.chatKey == chat else { return false }

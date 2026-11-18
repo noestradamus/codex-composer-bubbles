@@ -17,9 +17,11 @@ Both styles use untinted Clear glass. On macOS 26 and later, bubbles use the nat
 
 Under **Save button**, choose **Bookmark + Save** (the default), **Bookmark only**, or **Text only**. Each uses the same clear glass as the saved bubbles. The preview shows both settings together. You can click, drop text onto, or right-click the Save control in any style.
 
+After a successful save, the bookmark briefly fills with the app icon’s ultramarine blue and fades back to its outline. With **Reduce Motion** enabled, it holds the blue fill briefly, then returns directly to the outline.
+
 ## Save and reuse a suggestion
 
-1. Open the destination chat in Codex. When Codex suggests a follow-up, press **Tab** to put it in the draft.
+1. Open the destination chat in Codex. When a composer prediction appears, press **Tab** to put it in the draft.
 2. Click **Save** to keep it in this chat. If a little card asks you to link the chat, press **⌘⌥L** (Command–Option–L) in Codex. You can also drag selected text onto **Save** or copy it and choose **Save Copied Text as Bubble**.
 3. Click the new bubble to read the full text. Click the bubble again or use **×** to close it.
 4. When the row fills up, swipe with two fingers or click and drag sideways across the bubbles to browse. The glass tab moves the entire shelf.
