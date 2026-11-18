@@ -13,6 +13,11 @@ struct SavedBubble: Codable, Equatable {
         self.chatKey = chatKey
         self.number = number
     }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.id == rhs.id && lhs.number == rhs.number && lhs.chatKey == rhs.chatKey
+            && lhs.text.utf8.elementsEqual(rhs.text.utf8)
+    }
 }
 
 enum ShelfError: LocalizedError {
@@ -82,7 +87,7 @@ final class BubbleStore {
         }
 
         func matching(_ text: String, in chat: String) -> SavedBubble? {
-            bubbles.first { $0.text == text && canonicalBubbleChat($0.chatKey) == chat }
+            bubbles.first { $0.text.utf8.elementsEqual(text.utf8) && canonicalBubbleChat($0.chatKey) == chat }
         }
     }
 
@@ -159,8 +164,14 @@ final class BubbleStore {
         }
     }
 
-    func remove(_ id: UUID) throws {
-        try update { shelf in shelf.bubbles.removeAll { $0.id == id } }
+    @discardableResult
+    func remove(_ id: UUID, from owner: String) throws -> SavedBubble? {
+        guard let chat = canonicalBubbleChat(owner) else { throw ShelfError.unknownChat }
+        return try update { shelf in
+            guard let index = shelf.bubbles.firstIndex(where: { $0.id == id && canonicalBubbleChat($0.chatKey) == chat })
+            else { return nil }
+            return shelf.bubbles.remove(at: index)
+        }
     }
 
     private func read() throws -> Shelf {

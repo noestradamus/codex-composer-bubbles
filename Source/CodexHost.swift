@@ -2,8 +2,7 @@ import AppKit
 import ApplicationServices
 
 /// Positions returned by Accessibility are in global Quartz coordinates.
-// Only immutable AX handles cross a queue boundary. Reads and edits on those
-// handles are confined to HostAccess.
+// Accessibility reads are confined to the HostAccess queue.
 struct CodexSurface: @unchecked Sendable {
     fileprivate let windowID: ShelfWindowID
     fileprivate let quartzFrame: CGRect
@@ -301,38 +300,9 @@ final class CodexHost {
         return text
     }
 
-    /// Call only AFTER durable storage succeeds. No event is ever posted to
-    /// whichever app or editor happens to have focus.
-    func clearIfUnchanged(_ original: String, in surface: CodexSurface) -> Bool {
-        let editor = surface.editor
-        guard !original.isEmpty, isCurrent(surface), readDraft(editor) == original else { return false }
-        if settable(editor, "AXValue") {
-            if AXUIElementSetAttributeValue(editor, "AXValue" as CFString, "" as CFString) == .success,
-               readDraft(editor) == "" { return true }
-        }
-        // Some Chromium builds only allow editing through the text selection.
-        guard settable(editor, "AXSelectedTextRange"), settable(editor, "AXSelectedText"),
-              isCurrent(surface), readDraft(editor) == original else { return false }
-        let oldSelection = attribute(editor, "AXSelectedTextRange")
-        var range = CFRange(location: 0, length: original.utf16.count)
-        guard let encoded = AXValueCreate(.cfRange, &range),
-              AXUIElementSetAttributeValue(editor, "AXSelectedTextRange" as CFString, encoded) == .success else {
-            return false
-        }
-        // Refuse to mutate if a new edit or a non-text element invalidated the selection.
-        if isCurrent(surface), readDraft(editor) == original,
-           attribute(editor, "AXSelectedText") as? String == original,
-           AXUIElementSetAttributeValue(editor, "AXSelectedText" as CFString, "" as CFString) == .success,
-           readDraft(editor) == "" { return true }
-        if let oldSelection, readDraft(editor) == original {
-            AXUIElementSetAttributeValue(editor, "AXSelectedTextRange" as CFString, oldSelection)
-        }
-        return false
-    }
-
     private func isCurrent(_ surface: CodexSurface) -> Bool {
         guard surface.chatKey.hasPrefix("thread:"), let now = current(freshScan: true) else { return false }
-        return now.process == surface.process && CFEqual(now.editor, surface.editor)
+        return now.process == surface.process && now.windowID == surface.windowID && CFEqual(now.editor, surface.editor)
             && CFEqual(now.window, surface.window) && now.chatKey == surface.chatKey
     }
 
@@ -1058,7 +1028,6 @@ extension CodexHost {
     }
 
     /// Inspect the current draft at the gesture, even if no passive chat ID is exposed.
-    /// Mutating or clearing an editor still requires independent chat identification.
     func draftForLink(in context: CodexLinkContext) throws -> String {
         guard inLinkWindow(context), let original = context.editor, let view = current(freshScan: true),
               CFEqual(original, view.editor), !isForeignContext else { throw CaptureError.changed }
@@ -1103,19 +1072,20 @@ final class HostAccess: @unchecked Sendable {
     private var sessions: [ShelfWindowID: CodexHost] = [:]
     private var latestKeys = Set<String>()
 
-    private func targets(keepingShelvesWhileAXRemounts: Bool = false) -> [WindowTarget] {
+    private func targets(keepingShelvesWhileAXRemounts: Bool = false)
+        -> (visible: [WindowTarget], liveIDs: Set<ShelfWindowID>?) {
         guard let front = NSWorkspace.shared.frontmostApplication,
-              front.bundleIdentifier == "com.openai.codex", !front.isHidden else { return [] }
+              front.bundleIdentifier == "com.openai.codex", !front.isHidden else { return ([], nil) }
         let pid = front.processIdentifier
         guard let rows = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID)
-            as? [[String: Any]] else { return [] }
+            as? [[String: Any]] else { return ([], nil) }
         let live = Set(rows.compactMap { row -> ShelfWindowID? in
             guard row[kCGWindowOwnerPID as String] as? pid_t == pid else { return nil }
             return row[kCGWindowNumber as String] as? ShelfWindowID
         })
         sessions = sessions.filter { live.contains($0.key) && $0.value.target.pid == pid }
         let windows = CodexWindowGeometry.inventory(rows, pid: pid)
-        guard !windows.isEmpty else { return [] }
+        guard !windows.isEmpty else { return ([], live) }
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.15)
         let trusted = AXIsProcessTrusted()
@@ -1133,7 +1103,7 @@ final class HostAccess: @unchecked Sendable {
         let pairs = CodexWindowGeometry.match(windows, axFrames: handles.map(\.frame), focused: focused, previous: previous)
         let claimedHandles = Set(pairs.values)
         let now = ProcessInfo.processInfo.systemUptime
-        return windows.compactMap { row in
+        let visible: [WindowTarget] = windows.compactMap { row in
             let index = pairs[row.id]
             let window = index.map { handles[$0].window }
             // A frame alone can be a secondary Electron surface. Keep a known
@@ -1148,6 +1118,7 @@ final class HostAccess: @unchecked Sendable {
                                 focused: trusted ? (index != nil && index == focused) : row.id == windows.first?.id,
                                 occludingQuartzFrames: row.occludingQuartzFrames)
         }
+        return (visible, live)
     }
 
     private func session(for target: WindowTarget) -> CodexHost {
@@ -1164,13 +1135,13 @@ final class HostAccess: @unchecked Sendable {
     }
 
     private func session(for id: ShelfWindowID, activate: Bool) -> CodexHost? {
-        guard let target = targets().first(where: { $0.id == id }) else { return nil }
+        guard let target = targets().visible.first(where: { $0.id == id }) else { return nil }
         let scoped = session(for: target)
         return !activate || scoped.focusTarget() ? scoped : nil
     }
 
     func focusedWindowID() -> ShelfWindowID? {
-        queue.sync { targets().first(where: \.focused)?.id }
+        queue.sync { targets().visible.first(where: \.focused)?.id }
     }
 
     func read<T>(in id: ShelfWindowID, activate: Bool = false, _ action: (CodexHost) throws -> T) rethrows -> T? {
@@ -1187,10 +1158,11 @@ final class HostAccess: @unchecked Sendable {
     }
 
     func observeWindows(savedKeys: Set<String>,
-                        completion: @MainActor @Sendable @escaping ([WindowShelfObservation]) -> Void) {
+                        completion: @MainActor @Sendable @escaping ([WindowShelfObservation], Set<ShelfWindowID>?) -> Void) {
         queue.async { [self] in
             latestKeys = savedKeys
-            observeNext(targets(keepingShelvesWhileAXRemounts: true)[...], results: [], completion: completion)
+            let (visible, liveIDs) = targets(keepingShelvesWhileAXRemounts: true)
+            observeNext(visible[...], results: []) { observations in completion(observations, liveIDs) }
         }
     }
 
@@ -1209,10 +1181,6 @@ final class HostAccess: @unchecked Sendable {
                                                    occludingQuartzFrames: target.occludingQuartzFrames))
             observeNext(pending.dropFirst(), results: updated, completion: completion)
         }
-    }
-
-    func clearDraft(_ text: String, in surface: CodexSurface, completion: @MainActor @Sendable @escaping (Bool) -> Void) {
-        perform(in: surface.windowID, { $0.clearIfUnchanged(text, in: surface) }) { completion($0 == true) }
     }
 
     func reset() {

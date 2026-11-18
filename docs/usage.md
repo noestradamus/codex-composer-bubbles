@@ -27,7 +27,7 @@ After a successful save, the bookmark briefly fills with the app icon’s ultram
 4. When the row fills up, swipe with two fingers or click and drag sideways across the bubbles to browse. The glass tab moves the entire shelf.
 5. Pull a bubble out of the row toward the composer to restore its text as an editable draft. Hold **Option** to start a text drag in any direction. The bubble stays on the shelf until you remove it.
 
-If your original text is still in the composer after saving, replace it with your next prompt. To test restoring into an empty draft, clear the original after the bubble appears.
+The original text stays in the composer after saving. To start a different prompt, select the draft in Codex and type over it. To restore a bubble into an empty composer, clear the draft first.
 
 ## One-click capture
 
@@ -35,7 +35,7 @@ For faster saving, choose **Enable Direct Draft Capture…** from the menu-bar b
 
 Updates built with the same signing identity can reuse your approval. When moving from an older ad hoc build (1.10 or earlier), grant Accessibility to the signed copy once. If macOS still shows the old entry enabled, remove it, add the new **Composer Bubbles.app**, and turn it on.
 
-Then press **Tab** on a suggestion and click **Save**, or press **⌘⌥⇧B** while Codex is active. The companion saves the draft first. It clears the matching text when the editor allows it. If your Codex version or language exposes the field differently, use drag or **Save Copied Text as Bubble**.
+Then press **Tab** on a suggestion and click **Save**, or press **⌘⌥⇧B** while Codex is active. The companion copies the draft as it reads it, and you can continue editing in Codex. If your Codex version or language exposes the field differently, use drag or **Save Copied Text as Bubble**.
 
 ## Where bubbles go
 
@@ -49,7 +49,7 @@ When you return to a chat, Codex can recreate the composer and its buttons. If t
 
 If the view still needs a link, click **Save**, then press **⌘⌥L** in Codex. If you customized that shortcut, use your binding for **Copy chat deep link**. The link stays on your clipboard. A changed draft cancels a pending direct save.
 
-When Codex provides no reliable way to recognize the chat again, a **Bubbles for This Chat** window opens beside the composer. Click a bubble to read it, or drag it straight into Codex. Returning to Codex closes the window. To reopen it, click **Save** with an empty composer and follow the link prompt, or use **Link This Chat…** from the menu bar.
+When Codex provides no reliable way to recognize the chat again, a **Bubbles for This Chat** window opens beside the composer. Click a bubble to read it, or drag it straight into Codex. Choose **Remove** in its preview to delete it. **Undo** in the same window restores the most recent removal from that chat, even if the shelf is empty. Returning to Codex closes the window. To reopen it, click **Save** with an empty composer and follow the link prompt, or use **Link This Chat…** from the menu bar.
 
 To place an older shared bubble, open its intended chat, click the menu-bar bubble icon and choose **Move Earlier Bubble to This Chat**, then select the suggestion. Earlier bubbles stay off the shelf until you assign them.
 

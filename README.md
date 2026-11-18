@@ -37,7 +37,7 @@ To update a local build, quit Composer Bubbles, pull the latest source into the 
 ## Save and restore a suggestion
 
 1. In Codex, press **Tab** to accept a composer prediction into the draft.
-2. Click **Save** on the floating shelf, or press **⌘⌥⇧B**. Composer Bubbles saves the text in this chat and clears the matching draft when Codex allows it. You can also drag selected text onto **Save**, or copy it and choose **Save Copied Text as Bubble** from the menu bar.
+2. Click **Save** on the floating shelf, or press **⌘⌥⇧B**. Composer Bubbles copies the text into this chat’s shelf. The draft stays editable, so you can keep typing or replace it with your next prompt. You can also drag selected text onto **Save**, or copy it and choose **Save Copied Text as Bubble** from the menu bar.
 3. Click a bubble to preview the entire suggestion. Click it again to close the preview. Drag the bubble into the composer to restore it as an editable draft. The bubble stays available for reuse.
 4. If the row overflows, swipe with two fingers or drag sideways across a bubble or a gap. Hold **Option** to drag a bubble’s text in any direction.
 
@@ -55,10 +55,10 @@ Drag a shelf’s glass tab to move it. **Reset Bubble Position** returns the foc
 
 Suggestions are stored in `~/Library/Application Support/Composer Bubbles/bubbles.json`. The app uses Accessibility to locate the active Codex composer. When Codex hides its chat ID, the app can check a displayed chat title against Codex’s local catalog.
 
-Choose **Remove** in a bubble’s preview to delete it. **Undo Remove Bubble** in the menu bar restores the most recent removal in that session.
+Choose **Remove** in a bubble’s preview to delete it. To undo the most recent removal in this session, return to the chat where you removed it and choose **Undo Remove Bubble** from the menu bar. A manually linked window has its own **Undo** button.
 
 ## Tests
 
-Run `./Tests/run.sh` on macOS to check shelf layout, chat isolation, stable numbering, migration of older shelves, and concurrent saves. The tests use synthetic displays and temporary directories.
+Run `./Tests/run.sh` on macOS to check shelf layout, chat isolation, stable numbering, migration of older shelves, and concurrent saves. The tests use synthetic displays and temporary directories. In a logged-in Mac session, `python3 Tests/run-preview-checks.py` also exercises native preview controls, link-only removal and large-shelf updates with offscreen test windows.
 
 Maintainers can find the DMG build and signing steps in the [release guide](docs/releases.md).

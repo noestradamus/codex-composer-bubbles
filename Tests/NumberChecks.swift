@@ -43,7 +43,7 @@ struct NumberChecks {
         precondition(assigned.id == legacy && assigned.number == 2)
         let nextA = try store.save("New in A", in: chatA)
         precondition(nextA.number == 3)
-        try other.remove(nextA.id)
+        try other.remove(nextA.id, from: chatA)
         let afterDelete = try store.save("After deleting highest in A", in: chatA)
         precondition(afterDelete.number == 4)
         let undone = try other.restore(nextA)
@@ -52,10 +52,10 @@ struct NumberChecks {
         let reloaded = BubbleStore(directory: directory)
         try reloaded.reload()
         precondition(reloaded.visible(in: chatA).compactMap(\.number).sorted() == [1, 2, 3, 4])
-        for bubble in reloaded.visible(in: chatA) { try reloaded.remove(bubble.id) }
+        for bubble in reloaded.visible(in: chatA) { try reloaded.remove(bubble.id, from: chatA) }
         let afterEmpty = try other.save("After deleting all in A", in: chatA)
         precondition(afterEmpty.number == 5)
-        try other.remove(afterEmpty.id)
+        try other.remove(afterEmpty.id, from: chatA)
         let reSaved = try store.save(afterEmpty.text, in: chatA)
         let coalesced = try other.restore(afterEmpty)
         precondition(reSaved.number == 6 && coalesced == reSaved)

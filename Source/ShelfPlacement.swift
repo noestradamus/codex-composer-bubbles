@@ -58,8 +58,8 @@ struct ShelfPlacements {
                           slot: String? = nil, window: CGRect? = nil)
         -> (placement: ShelfPlacement, display: ShelfDisplay, didSave: Bool) {
         let key = slot ?? host.id
-        if let placement = saved[key] {
-            let destination = connected.first { $0.id == placement.displayID } ?? host
+        if let placement = saved[key], let destination = connected.first(where: { $0.id == placement.displayID }) {
+            estimates.removeValue(forKey: key)
             if let window, placement.ownerFrame == nil {
                 let attached = placement.attached(to: window)
                 saved[key] = attached
@@ -67,18 +67,26 @@ struct ShelfPlacements {
             }
             return (placement.following(window, on: host), destination, false)
         }
-        if !realAnchor, let estimate = estimates[key] {
+        // A disconnected destination keeps its saved pin. Anchor the temporary
+        // shelf inside its owning window until that monitor is available again.
+        let shouldPin = realAnchor && saved[key] == nil
+        if !shouldPin, let estimate = estimates[key] {
             return (estimate.following(window, on: host), host, false)
         }
-        let initial = ShelfPlacement.initial(anchor: anchor, visibleFrame: host.visibleFrame, displayFrame: host.frame,
-            displayID: host.id, count: count, legacyOffset: realAnchor ? legacyOffset : nil)
+        let ownerRoom = window.map {
+            CGRect(x: host.frame.minX + $0.minX, y: host.frame.maxY - $0.maxY, width: $0.width, height: $0.height)
+                .intersection(host.visibleFrame)
+        }
+        let room = ownerRoom.flatMap { $0.isEmpty ? nil : $0 } ?? host.visibleFrame
+        let initial = ShelfPlacement.initial(anchor: anchor, visibleFrame: room, displayFrame: host.frame,
+            displayID: host.id, count: count, legacyOffset: shouldPin ? legacyOffset : nil)
             .attached(to: window)
-        if realAnchor {
+        if shouldPin {
             pin(initial, for: key)
         } else {
             estimates[key] = initial
         }
-        return (initial, host, realAnchor)
+        return (initial, host, shouldPin)
     }
 
     mutating func pin(_ placement: ShelfPlacement, for hostID: String) {
@@ -102,6 +110,7 @@ final class WindowShelfPlacements {
     private var positions: ShelfPlacements
     private let defaults: UserDefaults?
     private var slots: [String: [CGWindowID: String]] = [:]
+    private var hostPID: pid_t?
 
     init(defaults: UserDefaults? = nil) {
         self.defaults = defaults
@@ -162,9 +171,15 @@ final class WindowShelfPlacements {
         if let defaults { positions.save(to: defaults) }
     }
 
-    func release(_ id: CGWindowID) {
-        for display in Array(slots.keys) {
-            if let key = slots[display]?.removeValue(forKey: id) { positions.discardEstimate(for: key) }
+    // A minimized, covered or off-Space window still owns its placement.
+    func retain(liveWindowIDs: Set<CGWindowID>, process: pid_t) {
+        let restarted = hostPID.map { $0 != process } ?? false
+        hostPID = process
+        for (display, reservations) in slots {
+            for (id, key) in reservations where restarted || !liveWindowIDs.contains(id) {
+                slots[display]?.removeValue(forKey: id)
+                positions.discardEstimate(for: key)
+            }
             if slots[display]?.isEmpty == true { slots.removeValue(forKey: display) }
         }
     }
@@ -355,13 +370,13 @@ struct ShelfPlacement: Codable, Equatable {
         let gripHeight = min(GlassTabDrawing.controlSize.height, room.height)
         let x = min(max(pin.x, room.minX), room.maxX - gripWidth)
         let top = min(max(pin.y, room.minY + gripHeight), room.maxY)
-        let grip = NSRect(x: x, y: top - gripHeight, width: gripWidth, height: gripHeight)
+        var grip = NSRect(x: x, y: top - gripHeight, width: gripWidth, height: gripHeight)
         let right = room.maxX - grip.minX, left = grip.maxX - room.minX
         let preferredWidth = laneWidth ?? 279
         let preferRight = right >= preferredWidth || right >= left
         let span = min(preferredWidth, max(right, left))
-        let saveWidth = min(SaveButtonDrawing.reservedWidth, max(0, room.width - gripWidth - 2))
-        let gap: CGFloat = 4
+        let gap = min(4, max(0, room.width - gripWidth))
+        let saveWidth = min(SaveButtonDrawing.reservedWidth, max(0, room.width - gripWidth - gap))
         let laneHeight = min(Self.laneHeight, room.height)
         let bottom = min(max(grip.midY - laneHeight / 2, room.minY), room.maxY - laneHeight)
         let area: NSRect, save: NSRect, list: NSRect
@@ -390,13 +405,21 @@ struct ShelfPlacement: Codable, Equatable {
             let width = min(room.width, max(gripWidth + gap + saveWidth, 142))
             let originX = min(max(preferRight ? grip.minX : grip.maxX - width, room.minX), room.maxX - width)
             let above = room.maxY - (bottom + laneHeight), below = bottom - room.minY
-            let goesUp = below < min(2 * Self.laneHeight, above)
-            let listHeight = min(2 * Self.laneHeight, goesUp ? above : below)
-            area = NSRect(x: originX, y: goesUp ? bottom : bottom - listHeight,
-                          width: width, height: laneHeight + listHeight)
+            let fitsBesideGrip = max(right, left) >= gripWidth + gap + saveWidth
+            let goesUp = below < min((fitsBesideGrip ? 2 : 3) * laneHeight, above)
+            let space = goesUp ? above : below
+            // Keep the tab pinned and put Save on its own row when neither side
+            // of the tab has room. In a short strip, shift the tab just enough
+            // to share the control row and keep one row available for bubbles.
+            let extraRow = !fitsBesideGrip && space >= 2 * laneHeight ? laneHeight : 0
+            if !fitsBesideGrip && extraRow == 0 {
+                grip.origin.x = preferRight ? room.maxX - saveWidth - gap - gripWidth : room.minX + saveWidth + gap
+            }
             let sx = preferRight ? min(grip.maxX + gap, room.maxX - saveWidth) : max(room.minX, grip.minX - gap - saveWidth)
-            save = NSRect(x: sx, y: bottom, width: saveWidth, height: laneHeight)
-            list = NSRect(x: originX, y: goesUp ? bottom + laneHeight : area.minY, width: width, height: listHeight)
+            save = NSRect(x: sx, y: bottom + (goesUp ? extraRow : -extraRow), width: saveWidth, height: laneHeight)
+            let listHeight = min(2 * laneHeight, space - extraRow)
+            list = NSRect(x: originX, y: goesUp ? save.maxY : save.minY - listHeight, width: width, height: listHeight)
+            area = list.union(save)
         }
         let frame = area.union(grip).union(save)
         func local(_ rect: NSRect) -> NSRect { rect.offsetBy(dx: -frame.minX, dy: -frame.minY) }

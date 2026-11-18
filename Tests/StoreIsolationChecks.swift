@@ -103,8 +103,25 @@ struct StoreIsolationChecks {
         try sameIDs(restarted.unassigned, [], "Resolved legacy records reappeared after relaunch")
         try check(!restarted.bubbles.contains { $0.id == legacyNull }, "Deduped legacy record was not retired")
 
+        let composed = "Filename: caf\u{e9}", decomposed = "Filename: cafe\u{301}"
+        let firstForm = try storage.save(composed, in: c)
+        let secondForm = try storage.save(decomposed, in: c)
+        let duplicate = try otherProcess.save(decomposed, in: c)
+        try check(firstForm.id != secondForm.id && duplicate.id == secondForm.id, "Only byte-identical drafts coalesce")
+        let changedText = SavedBubble(id: firstForm.id, text: decomposed, chatKey: c, number: firstForm.number)
+        try check(firstForm != changedText, "Rendered bubble equality preserves exact draft bytes")
+        try restarted.reload()
+        try check(restarted.visible(in: c).contains { $0.id == secondForm.id && $0.text.utf8.elementsEqual(decomposed.utf8) },
+                  "A decomposed Unicode draft must round-trip exactly through storage")
+        let wrongChat = try otherProcess.remove(secondForm.id, from: b)
+        try check(wrongChat == nil && otherProcess.visible(in: c).count == 2, "A linked snapshot can remove only its own bubbles")
+        let removed = try otherProcess.remove(secondForm.id, from: c)
+        let staleRemoval = try storage.remove(secondForm.id, from: c)
+        try check(removed == secondForm && staleRemoval == nil, "A stale removal must not invent an Undo item")
+
         print("PASS v1 migration, nil/null/shared recovery, strict visibility and refusal to save without identity")
         print("PASS original ID/text preservation, per-chat deduplication, stale-process writes, explicit assignment and racing reassignment")
         print("PASS 400 A/unknown/B/C visibility transitions, restart, and no live UI access")
+        print("PASS exact Unicode draft bytes, scoped removal and stale snapshot actions")
     }
 }

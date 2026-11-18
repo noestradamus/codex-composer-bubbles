@@ -3,7 +3,7 @@ import Foundation
 import SQLite3
 
 /// Resolves the exact display name of an independently identified local Codex chat.
-/// The caller supplies canonical keys that already own bubbles. A title cannot create a new owner.
+/// The caller supplies known bubble owners, including the owner of a pending Undo.
 final class LocalChatCatalog {
     private struct FileID: Equatable {
         let device: dev_t

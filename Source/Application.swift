@@ -206,8 +206,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard !refreshPending else { return }
         refreshPending = true
         let generation = refreshGeneration
-        let keys = Set(store.bubbles.compactMap { canonicalBubbleChat($0.chatKey) })
-        host.observeWindows(savedKeys: keys) { [weak self] observations in
+        var keys = Set(store.bubbles.compactMap { canonicalBubbleChat($0.chatKey) })
+        // A title-identified chat must remain identifiable after its last bubble is removed.
+        if let undoOwner = canonicalBubbleChat(pendingRemoval?.chatKey) { keys.insert(undoOwner) }
+        host.observeWindows(savedKeys: keys) { [weak self] observations, liveWindowIDs in
             guard let self else { return }
             refreshPending = false
             guard generation == refreshGeneration, !isHidden,
@@ -217,6 +219,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 refresh()
                 return
             }
+            if let liveWindowIDs { placements.retain(liveWindowIDs: liveWindowIDs, process: pid) }
             updateShelves(observations)
         }
     }
@@ -261,7 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // AX references in these immutable results go straight back to the host queue.
     private enum DraftRead: @unchecked Sendable {
-        case captured(CodexSurface, String)
+        case captured(chat: String, text: String)
         case link(CodexLinkContext, String?)
         case choices(String?), changed, failure(String)
     }
@@ -285,7 +288,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do {
                 let text = try host.capture(in: surface)
                 guard canonicalBubbleChat(host.currentChatKey()) == chat else { return .changed }
-                return .captured(surface, text)
+                return .captured(chat: chat, text: text)
             } catch { return .choices(error.localizedDescription) }
         }) { [weak self, weak shelf] outcome in
             guard let self, let shelf else { return }
@@ -295,13 +298,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Raising a visible full-screen Codex window can change the active Space.
             if generation != refreshGeneration && host.focusedWindowID() != windowID { return }
             switch outcome ?? .choices(nil) {
-            case .captured(let surface, let text):
-                guard saveAndRefresh(text, in: surface.chatKey, from: windowID) else { return }
-                // Clearing occurs only after a durable save. The worker rechecks the
-                // original editor, chat and text even if another edit arrived meanwhile.
-                host.clearDraft(text, in: surface) { [weak self] cleared in
-                    if !cleared { self?.lastStatus = "Saved. The original draft is still in the composer." }
-                }
+            case .captured(let chat, let text):
+                // Accessibility cannot clear a specific revision of the editor.
+                if saveAndRefresh(text, in: chat, from: windowID) { lastStatus = "Saved a copy of the draft." }
             case .link(let context, let text):
                 beginLinkRequest(text.map(LinkAction.currentDraft) ?? .show, for: windowID, context: context)
             case .choices(let message):
@@ -338,24 +337,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func removeBubble(_ id: UUID, in windowID: ShelfWindowID) {
-        guard canUseBubble(id, in: windowID), let item = store.bubbles.first(where: { $0.id == id }) else { return }
+        guard canUseBubble(id, in: windowID), let chat = shelves[windowID]?.chat else { return }
+        removeStoredBubble(id, from: chat)
+    }
+
+    @discardableResult
+    private func removeStoredBubble(_ id: UUID, from chat: String) -> Bool {
         do {
-            try store.remove(id)
+            guard let item = try store.remove(id, from: chat) else { refresh(); return false }
             pendingRemoval = item
-            lastStatus = "Removed. Undo is available in the menu bar."
+            lastStatus = "Removed. Undo is available in this chat."
             refresh()
-        } catch { showError(error.localizedDescription) }
+            return true
+        } catch { showError(error.localizedDescription); return false }
     }
 
     @objc private func undoRemoval(_ sender: NSMenuItem) {
         guard let windowID = sender.representedObject as? ShelfWindowID, let item = pendingRemoval,
-              let owner = canonicalBubbleChat(item.chatKey), currentChat(in: windowID) == owner else { return }
+              let chat = currentChat(in: windowID) else { return }
+        restoreRemovedBubble(item.id, in: chat)
+    }
+
+    @discardableResult
+    private func restoreRemovedBubble(_ id: UUID, in chat: String) -> SavedBubble? {
+        guard let item = pendingRemoval, item.id == id, canonicalBubbleChat(item.chatKey) == chat else { return nil }
         do {
-            try store.restore(item)
+            let restored = try store.restore(item)
             pendingRemoval = nil
             lastStatus = "Bubble restored."
             refresh()
-        } catch { showError(error.localizedDescription) }
+            return restored
+        } catch { showError(error.localizedDescription); return nil }
     }
 
     private struct Assignment {
@@ -459,24 +471,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 try persist(text, in: chat, from: windowID)
             case .currentDraft(let original):
                 guard let text = try host.read(in: windowID, { try $0.draftForLink(in: request.context) }),
-                      original == text, let confirmed = host.read(in: windowID, { $0.acceptCopiedChat(chat, for: request.context) }) ?? nil else {
+                      original.utf8.elementsEqual(text.utf8),
+                      host.read(in: windowID, { $0.acceptCopiedChat(chat, for: request.context) != nil }) == true else {
                     showError("The draft or chat changed. Click Save again to keep the current draft.")
                     return
                 }
                 try persist(text, in: chat, from: windowID)
-                if confirmed == .currentChat {
-                    _ = host.read(in: windowID) { host in
-                        guard let surface = host.current(), surface.chatKey == chat else { return false }
-                        return host.clearIfUnchanged(text, in: surface)
-                    }
-                }
             }
         } catch { showError(error.localizedDescription); return }
         lastStatus = nil
         refresh()
         if scope == .singleAction, host.read(in: windowID, { $0.inLinkWindow(request.context) }) == true,
-           currentChat(in: windowID) == nil {
-            shelves[windowID]?.panel.showLinkedBubbles(store.visible(in: chat))
+           currentChat(in: windowID) == nil, let shelf = shelves[windowID] {
+            let undoID = canonicalBubbleChat(pendingRemoval?.chatKey) == chat ? pendingRemoval?.id : nil
+            shelf.panel.showLinkedBubbles(store.visible(in: chat), undoID: undoID, onRemove: { [weak self, weak shelf] id in
+                guard let self, let shelf, self.shelves[windowID] === shelf else { return false }
+                return self.removeStoredBubble(id, from: chat)
+            }, onUndo: { [weak self, weak shelf] id in
+                guard let self, let shelf, self.shelves[windowID] === shelf else { return nil }
+                return self.restoreRemovedBubble(id, in: chat)
+            })
         }
     }
 

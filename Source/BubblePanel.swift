@@ -67,8 +67,14 @@ private struct RowPress {
 private final class BubblePill: NSButton, NSDraggingSource {
     let fullText: String?
     private var number: Int?
+    private var measuredSize: NSSize?
     var style: BubbleStyle = .shortCaptions {
-        didSet { updateSpokenLabel(); needsDisplay = true }
+        didSet {
+            guard style != oldValue else { return }
+            measuredSize = nil
+            updateSpokenLabel()
+            needsDisplay = true
+        }
     }
     var saveStyle: SaveButtonStyle = .bookmarkAndText { didSet { needsDisplay = true } }
     var saveConfirmation: CGFloat = 0 {
@@ -77,7 +83,12 @@ private final class BubblePill: NSButton, NSDraggingSource {
     weak var glassBackdrop: NSView? {
         didSet { if glassBackdrop !== oldValue { needsDisplay = true } }
     }
-    var preferredCellSize: NSSize { BubbleGlass.cellSize(for: style, caption: title, number: number) }
+    var preferredCellSize: NSSize {
+        if let measuredSize { return measuredSize }
+        let size = BubbleGlass.cellSize(for: style, caption: title, number: number)
+        measuredSize = size
+        return size
+    }
     override var isFlipped: Bool { false }
     var onPress: (() -> Void)?
     var requestPress: (() -> Void)?
@@ -297,12 +308,14 @@ private final class BubbleScroll: NSScrollView {
         let occupied = widths.reduce(0, +)
         let row = BubbleGlass.rowHeight
         let width = horizontal ? max(occupied, viewportWidth) : viewportWidth
-        documentView.frame.size = NSSize(width: width, height: horizontal ? row : row * CGFloat(pills.count))
+        let size = NSSize(width: width, height: horizontal ? row : row * CGFloat(pills.count))
+        if documentView.frame.size != size { documentView.setFrameSize(size) }
         var x = centered ? max(0, (width - occupied) / 2) : 0
         for (index, pill) in pills.enumerated() {
             let w = min(widths[index], width)
-            pill.frame = NSRect(x: horizontal ? x : (width - w) / 2, y: horizontal ? 0 : CGFloat(index) * row,
-                                width: w, height: row)
+            let frame = NSRect(x: horizontal ? x : (width - w) / 2, y: horizontal ? 0 : CGFloat(index) * row,
+                               width: w, height: row)
+            if pill.frame != frame { pill.frame = frame }
             x += w
         }
         // A label change or removal can shorten the document while it is scrolled.
@@ -540,117 +553,261 @@ private final class BubbleDocument: TopDownDocument {
     }
 }
 
+/// Inset scrollers take space from the text after AppKit tiles a scroll view.
+/// The document must wrap at that final width, including when the system changes scroller style.
+private final class PreviewTextScroll: NSScrollView {
+    private var fitting = false
+    private var fittedViewport: NSSize?
+
+    func setText(_ value: String) {
+        (documentView as? NSTextView)?.string = value
+        fittedViewport = nil
+    }
+
+    override func tile() {
+        super.tile()
+        fitDocument()
+    }
+
+    func fitDocument() {
+        guard !fitting, let text = documentView as? NSTextView,
+              fittedViewport != contentView.bounds.size || text.frame.width != contentView.bounds.width,
+              let manager = text.layoutManager, let container = text.textContainer else { return }
+        fitting = true
+        defer { fitting = false }
+        // A newly visible scrollbar can change the width once more after the first fit.
+        for _ in 0..<2 {
+            let viewport = contentView.bounds.size
+            guard viewport.width > 0, viewport.height > 0 else { return }
+            if text.frame.width != viewport.width {
+                text.setFrameSize(NSSize(width: viewport.width, height: text.frame.height))
+            }
+            manager.ensureLayout(for: container)
+            let bottom = max(manager.usedRect(for: container).maxY, manager.extraLineFragmentRect.maxY)
+            let size = NSSize(width: viewport.width, height: max(viewport.height, ceil(bottom) + 2))
+            if text.frame.size != size { text.setFrameSize(size) }
+            super.tile()
+            if contentView.bounds.size == viewport {
+                fittedViewport = viewport
+                break
+            }
+        }
+    }
+}
+
+@MainActor
+private func configurePreviewText(_ text: NSTextView, in scroll: PreviewTextScroll) {
+    scroll.drawsBackground = false
+    scroll.hasVerticalScroller = true
+    scroll.autohidesScrollers = true
+    scroll.scrollerStyle = .overlay
+    text.drawsBackground = false
+    text.textColor = .labelColor
+    text.isEditable = false
+    text.isSelectable = true
+    text.isRichText = false
+    text.isHorizontallyResizable = false
+    text.isVerticallyResizable = true
+    text.minSize = .zero
+    text.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+    text.textContainer?.widthTracksTextView = true
+    text.textContainer?.lineFragmentPadding = 0
+    text.textContainerInset = .zero
+    text.font = .systemFont(ofSize: 13)
+    text.setAccessibilityLabel("Full suggestion")
+    scroll.documentView = text
+}
+
+@MainActor
+private func configureRemoveButton(_ button: NSButton, identifier: String) {
+    button.isBordered = false
+    button.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)?
+        .withSymbolConfiguration(.init(pointSize: 10, weight: .regular))
+    button.imagePosition = .imageLeading
+    button.imageHugsTitle = true
+    button.font = .systemFont(ofSize: 11)
+    button.contentTintColor = .secondaryLabelColor
+    button.setAccessibilityLabel("Remove saved bubble")
+    button.setAccessibilityIdentifier(identifier)
+}
+
 /// A one-use snapshot opened by an explicit chat-link copy. This activating
 /// window owns its items independently of the nonactivating, tracked rail.
 @MainActor
 private final class LinkedBubbleWindow: NSWindow {
     var onDismiss: (() -> Void)?
     private let stack = BubbleDocument()
-    private let preview = NSTextView()
-    private let previewScroll = NSScrollView()
-    private let previewSurface = BubbleCallout(frame: .zero)
     private let list = BubbleScroll()
+    private let hint = NSTextField(labelWithString: "")
+    private let undo = NSButton(title: "Undo", target: nil, action: nil)
+    private let remove = NSButton(title: "Remove", target: nil, action: nil)
+    private let preview = NSTextView()
+    private let previewScroll = PreviewTextScroll()
+    private let previewSurface = BubbleCallout(frame: .zero)
+    private let initialScreen: NSRect
+    private let onRemove: (UUID) -> Bool
+    private let onUndo: (UUID) -> SavedBubble?
+    private var undoID: UUID?
+    private var items: [SavedBubble] = []
     private var orbs: [BubblePill] = []
     private var selected: BubblePill?
+    private var style: BubbleStyle
+    private var expansionAbove: CGFloat = 0
     private var dragging = false
     private var dismissed = false
 
-    init(items: [SavedBubble], near anchor: NSRect, on screen: NSRect, style: BubbleStyle = .shortCaptions) {
+    init(items: [SavedBubble], near anchor: NSRect, on screen: NSRect, style: BubbleStyle = .shortCaptions,
+         undoID: UUID?, onRemove: @escaping (UUID) -> Bool, onUndo: @escaping (UUID) -> SavedBubble?) {
+        self.style = style
+        self.initialScreen = screen
+        self.undoID = undoID
+        self.onRemove = onRemove
+        self.onUndo = onUndo
         let width = min(330, screen.width - 12)
-        let listHeight = BubbleGlass.cellSize(for: style).height
-        let height: CGFloat = items.isEmpty ? 56 : 45 + listHeight
-        super.init(contentRect: NSRect(x: 0, y: 0, width: width, height: height),
-                   styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let size = NSSize(width: width, height: items.isEmpty ? 56 : 45 + BubbleGlass.rowHeight)
+        super.init(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable],
+                   backing: .buffered, defer: false)
         isReleasedWhenClosed = false
         isRestorable = false
         title = "Bubbles for This Chat"
         setAccessibilityIdentifier("composer-bubbles.linked-window")
         collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         level = .floating
-        let content = TopDownDocument(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        let content = TopDownDocument(frame: NSRect(origin: .zero, size: size))
         contentView = content
-        let label = NSTextField(labelWithString: items.isEmpty
-            ? "No saved bubbles in this chat."
-            : "Click a bubble to read it. Drag it into Codex to edit.")
-        label.setAccessibilityIdentifier("composer-bubbles.linked-hint")
-        label.font = .systemFont(ofSize: 12)
-        label.textColor = .secondaryLabelColor
-        label.frame = NSRect(x: 14, y: items.isEmpty ? 17 : 10, width: width - 28, height: 21)
-        content.addSubview(label)
-        if !items.isEmpty {
-            list.frame = NSRect(x: 12, y: 38, width: width - 24, height: listHeight)
-            list.horizontal = true
-            list.scrollerStyle = .overlay
-            list.autohidesScrollers = true
-            list.setAccessibilityLabel("Bubbles saved in this chat")
-            list.documentView = stack
-            content.addSubview(list)
-            for item in items.sorted(by: { ($0.number ?? Int.max) < ($1.number ?? Int.max) }) {
-                let pill = BubblePill(bubble: item, style: style,
-                                      identifier: "composer-bubbles.linked-item." + item.id.uuidString)
-                orbs.append(pill)
-                pill.canUse = { [weak self] in
-                    guard let self else { return false }
-                    return !dismissed && isVisible && NSApp.isActive
-                }
-                pill.onPress = { [weak self, weak pill] in
-                    guard let self, let pill, !dismissed else { return }
-                    selected?.isOpen = false
-                    let next = selected === pill ? nil : pill
-                    selected = next
-                    next?.isOpen = true
-                    preview.string = next?.fullText ?? ""
-                    previewSurface.isHidden = next == nil
-                    let priorOrigin = frame.origin
-                    setContentSize(NSSize(width: width, height: height + (next == nil ? 0 : 105)))
-                    setFrameOrigin(NSPoint(x: priorOrigin.x,
-                                           y: max(screen.minY + 4, min(priorOrigin.y, screen.maxY - frame.height - 4))))
-                    preview.scrollRangeToVisible(NSRange(location: 0, length: 0))
-                }
-                // Keep the source alive if Codex becomes active while AppKit
-                // still owns a native drag session. Its text is already on that drag's pasteboard.
-                pill.dragActivity = { [weak self] active in
-                    guard let self else { return }
-                    dragging = active
-                    if !active && dismissed { finishClosing() }
-                }
-                stack.addSubview(pill)
-            }
-            setStyle(style)
-            previewSurface.frame = NSRect(x: 12, y: list.frame.maxY + 5, width: width - 24, height: 97)
-            previewSurface.shape(body: previewSurface.bounds)
-            previewScroll.frame = previewSurface.bounds.insetBy(dx: 14, dy: 11)
-            previewScroll.hasVerticalScroller = true
-            previewScroll.autohidesScrollers = true
-            previewScroll.scrollerStyle = .overlay
-            previewScroll.drawsBackground = false
-            preview.frame = NSRect(origin: .zero, size: previewScroll.contentSize)
-            preview.minSize = NSSize(width: 0, height: 0)
-            preview.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-            preview.isHorizontallyResizable = false
-            preview.isVerticallyResizable = true
-            preview.textContainer?.widthTracksTextView = true
-            preview.isEditable = false
-            preview.isSelectable = true
-            preview.isRichText = false
-            preview.drawsBackground = false
-            preview.font = .systemFont(ofSize: 13)
-            preview.setAccessibilityIdentifier("composer-bubbles.linked-preview")
-            preview.setAccessibilityLabel("Full suggestion")
-            previewScroll.documentView = preview
-            previewSurface.addSubview(previewScroll)
-            previewSurface.isHidden = true
-            content.addSubview(previewSurface)
+
+        hint.setAccessibilityIdentifier("composer-bubbles.linked-hint")
+        hint.font = .systemFont(ofSize: 12)
+        hint.textColor = .secondaryLabelColor
+        content.addSubview(hint)
+        undo.isBordered = false
+        undo.font = .systemFont(ofSize: 12)
+        undo.setAccessibilityIdentifier("composer-bubbles.linked-undo")
+        undo.setAccessibilityLabel("Undo remove bubble")
+        undo.toolTip = "Undo the last bubble removal in this chat."
+        undo.target = self
+        undo.action = #selector(undoRemoval)
+        content.addSubview(undo)
+
+        list.horizontal = true
+        list.scrollerStyle = .overlay
+        list.autohidesScrollers = true
+        list.setAccessibilityLabel("Bubbles saved in this chat")
+        list.documentView = stack
+        content.addSubview(list)
+        configurePreviewText(preview, in: previewScroll)
+        preview.setAccessibilityIdentifier("composer-bubbles.linked-preview")
+        previewSurface.addSubview(previewScroll)
+        configureRemoveButton(remove, identifier: "composer-bubbles.linked-remove")
+        remove.target = self
+        remove.action = #selector(removeSelection)
+        previewSurface.addSubview(remove)
+        content.addSubview(previewSurface)
+
+        for item in items.sorted(by: { ($0.number ?? Int.max) < ($1.number ?? Int.max) }) {
+            insert(item, at: self.items.count)
         }
         let idealX = anchor.isEmpty ? screen.midX - frame.width / 2 : anchor.maxX - frame.width
         let idealY = anchor.isEmpty ? screen.midY - frame.height / 2 : anchor.maxY + 12
         setFrameOrigin(NSPoint(x: max(screen.minX + 4, min(idealX, screen.maxX - frame.width - 4)),
                                y: max(screen.minY + 4, min(idealY, screen.maxY - frame.height - 4))))
+        layoutSnapshot()
+        list.layoutBubbles(orbs, centered: false)
         NotificationCenter.default.addObserver(self, selector: #selector(deactivated),
                                                name: NSApplication.didResignActiveNotification, object: NSApp)
     }
 
+    private var acceptsSnapshotAction: Bool { !dismissed && isVisible && NSApp.isActive }
+
+    private func insert(_ item: SavedBubble, at index: Int) {
+        let pill = BubblePill(bubble: item, style: style, identifier: "composer-bubbles.linked-item." + item.id.uuidString)
+        pill.canUse = { [weak self] in self?.acceptsSnapshotAction == true }
+        pill.onPress = { [weak self, weak pill] in
+            guard let self, let pill, acceptsSnapshotAction else { return }
+            select(selected === pill ? nil : pill)
+        }
+        // Keep a dragged source alive if Codex becomes active before AppKit ends the session.
+        pill.dragActivity = { [weak self] active in
+            guard let self else { return }
+            dragging = active
+            if !active && dismissed { finishClosing() }
+        }
+        items.insert(item, at: index)
+        orbs.insert(pill, at: index)
+        stack.addSubview(pill)
+    }
+
+    private func select(_ next: BubblePill?) {
+        selected?.isOpen = false
+        selected = next
+        next?.isOpen = true
+        previewScroll.setText(next?.fullText ?? "")
+        layoutSnapshot()
+        preview.scrollRangeToVisible(NSRange(location: 0, length: 0))
+    }
+
+    @objc private func removeSelection() {
+        guard acceptsSnapshotAction, let selected, let index = orbs.firstIndex(of: selected) else { return }
+        let id = items[index].id
+        guard onRemove(id), !dismissed else { return }
+        undoID = id
+        items.remove(at: index)
+        orbs.remove(at: index).removeFromSuperview()
+        select(nil)
+        list.layoutBubbles(orbs, centered: false)
+    }
+
+    @objc private func undoRemoval() {
+        guard acceptsSnapshotAction, let undoID, let restored = onUndo(undoID), !dismissed else { return }
+        self.undoID = nil
+        if !items.contains(where: { $0.id == restored.id }) {
+            let index = items.firstIndex { ($0.number ?? Int.max) > (restored.number ?? Int.max) } ?? items.count
+            insert(restored, at: index)
+        }
+        select(nil)
+        list.layoutBubbles(orbs, centered: false)
+        if let index = items.firstIndex(where: { $0.id == restored.id }) { stack.scrollToVisible(orbs[index].frame) }
+    }
+
+    private func layoutSnapshot() {
+        let display = screen?.visibleFrame ?? initialScreen
+        let top = frame.maxY - expansionAbove
+        let width = contentRect(forFrameRect: frame).width
+        let row = BubbleGlass.rowHeight
+        let collapsed = items.isEmpty ? CGFloat(56) : 45 + row
+        let baseHeight = frameRect(forContentRect: NSRect(x: 0, y: 0, width: width, height: collapsed)).height
+        let gap: CGFloat = 4
+        let below = top - baseHeight - display.minY - gap
+        let above = display.maxY - gap - top
+        let extra: CGFloat = selected == nil ? 0 : min(112, max(0, display.height - 2 * gap - baseHeight))
+        expansionAbove = below < extra && above > below ? extra : 0
+        let size = NSSize(width: width, height: collapsed + extra)
+        let bounds = frameRect(forContentRect: NSRect(origin: .zero, size: size))
+        let y = min(display.maxY - gap - bounds.height, max(display.minY + gap, top + expansionAbove - bounds.height))
+        let nextFrame = NSRect(x: frame.minX, y: y, width: bounds.width, height: bounds.height)
+        if nextFrame != frame { setFrame(nextFrame, display: true) }
+
+        hint.stringValue = items.isEmpty ? "No saved bubbles in this chat." : "Click to read. Drag into Codex to edit."
+        hint.frame = NSRect(x: 14, y: expansionAbove + (items.isEmpty ? 17 : 10),
+                            width: width - (undoID == nil ? 28 : 71), height: 21)
+        undo.isHidden = undoID == nil
+        undo.frame = NSRect(x: width - 53, y: hint.frame.minY, width: 41, height: 21)
+        list.isHidden = items.isEmpty
+        list.frame = NSRect(x: 12, y: expansionAbove + 38, width: width - 24, height: row)
+        previewSurface.isHidden = selected == nil
+        if selected != nil {
+            let previewY = expansionAbove > 0 ? gap : list.frame.maxY + gap
+            previewSurface.frame = NSRect(x: 12, y: previewY, width: width - 24, height: max(0, extra - 6))
+            previewSurface.shape(body: previewSurface.bounds)
+            previewScroll.frame = NSRect(x: 14, y: 31, width: previewSurface.bounds.width - 28,
+                                         height: max(1, previewSurface.bounds.height - 40))
+            previewScroll.fitDocument()
+            remove.frame = NSRect(x: 10, y: 5, width: 61, height: 21)
+        }
+    }
+
     func setStyle(_ style: BubbleStyle) {
+        self.style = style
         orbs.forEach { $0.style = style }
         list.layoutBubbles(orbs, centered: false)
         if let selected { stack.scrollToVisible(selected.frame) }
@@ -716,7 +873,7 @@ final class BubblePanelController {
     private let move = BubbleMoveHandle()
     private let scroll = BubbleScroll(frame: .zero)
     private let document = BubbleDocument(frame: .zero)
-    private let textScroll = NSScrollView(frame: .zero)
+    private let textScroll = PreviewTextScroll(frame: .zero)
     private let previewText = NSTextView(frame: .zero)
     private let remove = NSButton(title: "Remove", target: nil, action: nil)
     private let cancelLink = NSButton(title: "Cancel", target: nil, action: nil)
@@ -819,21 +976,20 @@ final class BubblePanelController {
         save.style = next
         pills.forEach { $0.style = next }
         linkedWindow?.setStyle(next)
+        if let selectedID { revealID = selectedID }
         layoutDirty = true
         if let display { layout(on: display) }
-        if let selectedID, let index = bubbles.firstIndex(where: { $0.id == selectedID }) {
-            document.scrollToVisible(pills[index].frame)
-            positionPreview()
-        }
     }
 
     @objc private func openSettings() { onSettings?() }
 
-    func showLinkedBubbles(_ items: [SavedBubble]) {
+    func showLinkedBubbles(_ items: [SavedBubble], undoID: UUID?,
+                           onRemove: @escaping (UUID) -> Bool, onUndo: @escaping (UUID) -> SavedBubble?) {
         linkedWindow?.close()
         guard let visible = screen.isEmpty ? NSScreen.main?.visibleFrame : screen else { return }
         hide()
-        let window = LinkedBubbleWindow(items: items, near: panel.frame.isEmpty ? anchor : panel.frame, on: visible, style: style)
+        let window = LinkedBubbleWindow(items: items, near: panel.frame.isEmpty ? anchor : panel.frame, on: visible,
+                                        style: style, undoID: undoID, onRemove: onRemove, onUndo: onUndo)
         linkedWindow = window
         window.onDismiss = { [weak self, weak window] in
             if self?.linkedWindow === window { self?.linkedWindow = nil }
@@ -918,34 +1074,10 @@ final class BubblePanelController {
     private func configurePreview() {
         card.hasShadow = true
         card.contentView = previewSurface
-        textScroll.drawsBackground = false
-        textScroll.hasVerticalScroller = true
-        textScroll.autohidesScrollers = true
-        textScroll.scrollerStyle = .overlay
-        textScroll.documentView = previewText
-        previewText.drawsBackground = false
-        previewText.textColor = .labelColor
-        previewText.isEditable = false
-        previewText.isSelectable = true
-        previewText.isRichText = false
-        previewText.isHorizontallyResizable = false
-        previewText.isVerticallyResizable = true
-        previewText.textContainer?.widthTracksTextView = true
-        previewText.textContainer?.lineFragmentPadding = 0
-        previewText.textContainerInset = .zero
-        previewText.font = .systemFont(ofSize: 13)
-        previewText.setAccessibilityLabel("Full suggestion")
+        configurePreviewText(previewText, in: textScroll)
         previewText.setAccessibilityIdentifier("composer-bubbles.preview-text")
         previewSurface.addSubview(textScroll)
-        remove.isBordered = false
-        remove.image = NSImage(systemSymbolName: "trash", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 10, weight: .regular))
-        remove.imagePosition = .imageLeading
-        remove.imageHugsTitle = true
-        remove.font = .systemFont(ofSize: 11)
-        remove.contentTintColor = .secondaryLabelColor
-        remove.setAccessibilityLabel("Remove saved bubble")
-        remove.setAccessibilityIdentifier("composer-bubbles.remove")
+        configureRemoveButton(remove, identifier: "composer-bubbles.remove")
         remove.target = self
         remove.action = #selector(removeSelection)
         previewSurface.addSubview(remove)
@@ -971,10 +1103,13 @@ final class BubblePanelController {
             if sameChat && !oldIDs.isEmpty && incoming.count == oldIDs.count + 1 {
                 revealID = incoming.first(where: { !oldIDs.contains($0.id) })?.id
             } else { revealID = nil }
+            if let selectedID, let selected = bubbles.first(where: { $0.id == selectedID }),
+               !incoming.contains(selected) {
+                // Remove must refer to the exact record shown in the open preview.
+                closePreview()
+            }
             incomingBubbles = incoming
-            bubbles = incoming.sorted { ($0.number ?? Int.max) < ($1.number ?? Int.max) }
-            rebuildPills()
-            if let selectedID, !bubbles.contains(where: { $0.id == selectedID }) { closePreview() }
+            updatePills(incoming.sorted { ($0.number ?? Int.max) < ($1.number ?? Int.max) })
         }
         guard dragStart == nil else { return }
         let screens = ShelfDisplay.connected()
@@ -1007,13 +1142,20 @@ final class BubblePanelController {
         linkedWindow = nil
         card.close()
         panel.close()
-        placements.release(windowID)
     }
 
-    private func rebuildPills() {
+    private func updatePills(_ next: [SavedBubble]) {
         pendingPreview = nil
-        pills.forEach { $0.removeFromSuperview() }
-        pills = bubbles.map { bubble in
+        var existing: [UUID: (bubble: SavedBubble, pill: BubblePill)] = [:]
+        for (bubble, pill) in zip(bubbles, pills) {
+            let duplicate = existing.updateValue((bubble, pill), forKey: bubble.id)
+            duplicate?.pill.removeFromSuperview()
+        }
+        pills = next.map { bubble in
+            if let prior = existing.removeValue(forKey: bubble.id) {
+                if prior.bubble == bubble { return prior.pill }
+                prior.pill.removeFromSuperview()
+            }
             let pill = BubblePill(bubble: bubble, style: style, identifier: "composer-bubbles.item." + bubble.id.uuidString)
             pill.isOpen = bubble.id == selectedID
             pill.canUse = { [weak self] in
@@ -1024,6 +1166,8 @@ final class BubblePanelController {
             document.addSubview(pill)
             return pill
         }
+        existing.values.forEach { $0.pill.removeFromSuperview() }
+        bubbles = next
         layoutDirty = true
     }
 
@@ -1048,12 +1192,17 @@ final class BubblePanelController {
         screen = display.visibleFrame
         if panel.frame != geometry.frame { panel.setFrame(geometry.frame, display: true) }
         let changed = geometry != lastLayout
-        if layoutDirty || changed {
+        let needsLayout = layoutDirty || changed
+        if needsLayout {
+            // Reconcile the preview after all frame changes and automatic scrolling are complete.
+            layoutDirty = true
             layoutPills(geometry)
             lastLayout = geometry
             layoutDirty = false
         }
-        if (selectedID != nil || linking) && (changed || displayChanged) { positionPreview() }
+        if needsLayout || displayChanged {
+            if linking { positionPreview() } else { didScroll() }
+        }
     }
 
     private func layoutPills(_ geometry: ShelfLayout) {
@@ -1080,10 +1229,12 @@ final class BubblePanelController {
 
     @objc private func didScroll() {
         guard let selectedID, !layoutDirty, let index = bubbles.firstIndex(where: { $0.id == selectedID }) else { return }
-        let cell = pills[index].frame
-        if scroll.contentView.documentVisibleRect.contains(NSPoint(x: cell.midX, y: cell.midY)) {
-            positionPreview()
-        } else { closePreview() }
+        if visibleSurface(of: pills[index]).isEmpty { closePreview() } else { positionPreview() }
+    }
+
+    private func visibleSurface(of pill: BubblePill) -> NSRect {
+        let face = document.convert(BubbleGlass.surfaceRect(in: pill.bounds), from: pill)
+        return face.intersection(scroll.contentView.documentVisibleRect)
     }
 
     private func requestPreview(_ id: UUID) {
@@ -1099,7 +1250,7 @@ final class BubblePanelController {
             guard let self, pendingPreview?.request == request else { return }
             pendingPreview = nil
             guard allowed, panel.isVisible, let index = bubbles.firstIndex(where: { $0.id == id }),
-                  scroll.contentView.documentVisibleRect.intersects(pills[index].frame) else { return }
+                  !visibleSurface(of: pills[index]).isEmpty else { return }
             togglePreview(id)
         }
     }
@@ -1107,10 +1258,10 @@ final class BubblePanelController {
     private func togglePreview(_ id: UUID) {
         if linking { closePreview() }
         if selectedID == id { closePreview(); return }
-        guard let index = bubbles.firstIndex(where: { $0.id == id }) else { return }
+        guard let index = bubbles.firstIndex(where: { $0.id == id }), !visibleSurface(of: pills[index]).isEmpty else { return }
         selectedID = id
         for (i, pill) in pills.enumerated() { pill.isOpen = i == index }
-        previewText.string = bubbles[index].text
+        textScroll.setText(bubbles[index].text)
         previewMetrics = nil
         positionPreview()
         previewText.scrollRangeToVisible(NSRange(location: 0, length: 0))
@@ -1131,7 +1282,7 @@ final class BubblePanelController {
     func showLinkPrompt(_ message: String) {
         closePreview()
         linking = true
-        previewText.string = message
+        textScroll.setText(message)
         previewMetrics = nil
         positionPreview()
         card.orderFrontRegardless()
@@ -1174,10 +1325,15 @@ final class BubblePanelController {
         let pointerHeight: CGFloat = 7
         let height = min(max(39, metrics.textHeight + 15 + bottomInset) + pointerHeight,
                          min(260, screen.height - 8))
-        let target: NSView
-        if let selectedID, let index = bubbles.firstIndex(where: { $0.id == selectedID }) { target = pills[index] }
-        else { target = save }
-        let targetFrame = panel.convertToScreen(target.convert(target.bounds, to: nil))
+        let targetRect: NSRect
+        if let selectedID, let index = bubbles.firstIndex(where: { $0.id == selectedID }) {
+            let surface = visibleSurface(of: pills[index])
+            guard !surface.isEmpty else { closePreview(); return }
+            let visible = document.convert(surface, to: nil)
+            let row = pills[index].convert(pills[index].bounds, to: nil)
+            targetRect = NSRect(x: visible.minX, y: row.minY, width: visible.width, height: row.height)
+        } else { targetRect = save.convert(save.bounds, to: nil) }
+        let targetFrame = panel.convertToScreen(targetRect)
         let roomAbove = screen.maxY - targetFrame.maxY, roomBelow = targetFrame.minY - screen.minY
         let above = roomAbove >= height + 6 || roomAbove >= roomBelow
         let y = above ? targetFrame.maxY + 2 : targetFrame.minY - 2 - height
@@ -1190,8 +1346,7 @@ final class BubblePanelController {
         let textFrame = NSRect(x: sideInset, y: body.minY + bottomInset, width: textWidth,
                                height: max(10, body.height - 13 - bottomInset))
         if textScroll.frame != textFrame { textScroll.frame = textFrame }
-        let contentSize = NSSize(width: textWidth, height: max(textFrame.height, metrics.textHeight + 2))
-        if previewText.frame.size != contentSize { previewText.setFrameSize(contentSize) }
+        textScroll.fitDocument()
         remove.frame = NSRect(x: 12, y: body.minY + 6, width: 61, height: 21)
         cancelLink.frame = NSRect(x: 12, y: body.minY + 6, width: 43, height: 21)
     }
