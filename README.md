@@ -38,7 +38,7 @@ To update a local build, quit Composer Bubbles, pull the latest source into the 
 
 1. In Codex, press **Tab** to accept a composer prediction into the draft.
 2. Click **Save** on the floating shelf, or press **⌘⌥⇧B**. Composer Bubbles saves the text in this chat and clears the matching draft when Codex allows it. You can also drag selected text onto **Save**, or copy it and choose **Save Copied Text as Bubble** from the menu bar.
-3. Click a bubble to preview the entire suggestion. Drag it out of the row into the composer to restore it as an editable draft. The bubble stays available for reuse.
+3. Click a bubble to preview the entire suggestion. Click it again to close the preview. Drag the bubble into the composer to restore it as an editable draft. The bubble stays available for reuse.
 4. If the row overflows, swipe with two fingers or drag sideways across a bubble or a gap. Hold **Option** to drag a bubble’s text in any direction.
 
 If Codex hides the chat ID, the companion can ask you to link the chat. Follow the card and press **⌘⌥L** in Codex, or use your custom shortcut for **Copy chat deep link**. For help with chat detection, one-click capture, and recovering older bubbles, see the [usage guide](docs/usage.md).

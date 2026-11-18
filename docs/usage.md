@@ -23,7 +23,7 @@ After a successful save, the bookmark briefly fills with the app icon’s ultram
 
 1. Open the destination chat in Codex. When a composer prediction appears, press **Tab** to put it in the draft.
 2. Click **Save** to keep it in this chat. If a little card asks you to link the chat, press **⌘⌥L** (Command–Option–L) in Codex. You can also drag selected text onto **Save** or copy it and choose **Save Copied Text as Bubble**.
-3. Click the new bubble to read the full text. Click the bubble again or use **×** to close it.
+3. Click the new bubble to read the full text. Click the same bubble again to close the preview.
 4. When the row fills up, swipe with two fingers or click and drag sideways across the bubbles to browse. The glass tab moves the entire shelf.
 5. Pull a bubble out of the row toward the composer to restore its text as an editable draft. Hold **Option** to start a text drag in any direction. The bubble stays on the shelf until you remove it.
 

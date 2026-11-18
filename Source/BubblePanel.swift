@@ -83,7 +83,13 @@ private final class BubblePill: NSButton, NSDraggingSource {
     var requestPress: (() -> Void)?
     var canUse: (() -> Bool)?
     var dragActivity: ((Bool) -> Void)?
-    var isOpen = false { didSet { needsDisplay = true } }
+    var isOpen = false {
+        didSet {
+            guard isOpen != oldValue else { return }
+            setAccessibilityExpanded(isOpen)
+            needsDisplay = true
+        }
+    }
     private enum Gesture {
         case idle, pressed(RowPress), panning(RowPress), exporting
     }
@@ -101,8 +107,9 @@ private final class BubblePill: NSButton, NSDraggingSource {
         setAccessibilityIdentifier(identifier)
         setAccessibilityLabel(text == nil ? title : "Saved suggestion: " + title)
         setAccessibilityHelp(text ?? "Save the focused draft, or drop selected text here.")
+        if text != nil { setAccessibilityExpanded(false) }
         toolTip = text == nil ? "Save the Codex draft, or drop text here. Right-click for Settings."
-                              : "Click to read. Drag toward the composer to restore."
+                              : "Click to open or close the preview. Drag toward the composer to restore."
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
@@ -712,7 +719,7 @@ final class BubblePanelController {
     private let textScroll = NSScrollView(frame: .zero)
     private let previewText = NSTextView(frame: .zero)
     private let remove = NSButton(title: "Remove", target: nil, action: nil)
-    private let close = NSButton(title: "", target: nil, action: nil)
+    private let cancelLink = NSButton(title: "Cancel", target: nil, action: nil)
     private let previewSurface = BubbleCallout(frame: .zero)
     private var linkedWindow: LinkedBubbleWindow?
     private var style = BubbleStyle.shortCaptions
@@ -724,7 +731,12 @@ final class BubblePanelController {
     private var selectedID: UUID?
     private var pendingPreview: (id: UUID, request: UUID)?
     private var previewMetrics: (available: CGFloat, width: CGFloat, textHeight: CGFloat)?
-    private var linking = false
+    private var linking = false {
+        didSet {
+            remove.isHidden = linking
+            cancelLink.isHidden = !linking
+        }
+    }
     private var anchor = NSRect.zero
     private var screen = NSRect.zero
     private var placement: ShelfPlacement?
@@ -937,17 +949,15 @@ final class BubblePanelController {
         remove.target = self
         remove.action = #selector(removeSelection)
         previewSurface.addSubview(remove)
-        close.isBordered = false
-        close.contentTintColor = .secondaryLabelColor
-        close.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 10, weight: .semibold))
-        close.imagePosition = .imageOnly
-        close.setAccessibilityLabel("Close preview")
-        close.toolTip = "Close preview"
-        close.setAccessibilityIdentifier("composer-bubbles.close")
-        close.target = self
-        close.action = #selector(closePreview)
-        previewSurface.addSubview(close)
+        cancelLink.isBordered = false
+        cancelLink.font = remove.font
+        cancelLink.contentTintColor = .secondaryLabelColor
+        cancelLink.setAccessibilityLabel("Cancel chat linking")
+        cancelLink.setAccessibilityIdentifier("composer-bubbles.cancel-link")
+        cancelLink.target = self
+        cancelLink.action = #selector(closePreview)
+        cancelLink.isHidden = true
+        previewSurface.addSubview(cancelLink)
     }
 
     func show(bubbles incoming: [SavedBubble], anchor: NSRect, screen: NSRect, realAnchor: Bool = true,
@@ -1112,7 +1122,6 @@ final class BubblePanelController {
         guard selectedID != nil || linking || card.isVisible else { return }
         let cancelledLink = linking
         linking = false
-        remove.isHidden = false
         selectedID = nil
         pills.forEach { $0.isOpen = false }
         card.orderOut(nil)
@@ -1122,7 +1131,6 @@ final class BubblePanelController {
     func showLinkPrompt(_ message: String) {
         closePreview()
         linking = true
-        remove.isHidden = true
         previewText.string = message
         previewMetrics = nil
         positionPreview()
@@ -1144,7 +1152,8 @@ final class BubblePanelController {
     private func positionPreview() {
         guard screen.width > 64, screen.height > 60 else { return }
         let availableWidth = min(370, screen.width - 10)
-        let horizontalInsets: CGFloat = 53
+        let sideInset: CGFloat = 16
+        let horizontalInsets = 2 * sideInset
         // Scrolling an open bubble moves the callout every frame. Measure its
         // text only when the suggestion or the available width changes.
         if previewMetrics?.available != availableWidth {
@@ -1161,7 +1170,7 @@ final class BubblePanelController {
         guard let metrics = previewMetrics else { return }
         let width = metrics.width
         let textWidth = width - horizontalInsets
-        let bottomInset: CGFloat = linking ? 14 : 33
+        let bottomInset: CGFloat = 33
         let pointerHeight: CGFloat = 7
         let height = min(max(39, metrics.textHeight + 15 + bottomInset) + pointerHeight,
                          min(260, screen.height - 8))
@@ -1178,12 +1187,12 @@ final class BubblePanelController {
         let body = NSRect(x: 0, y: above ? pointerHeight : 0, width: width, height: height - pointerHeight)
         let tipX = min(max(28, targetFrame.midX - frame.minX), width - 28)
         previewSurface.shape(body: body, tip: NSPoint(x: tipX, y: above ? 1 : height - 1))
-        let textFrame = NSRect(x: 16, y: body.minY + bottomInset, width: textWidth,
+        let textFrame = NSRect(x: sideInset, y: body.minY + bottomInset, width: textWidth,
                                height: max(10, body.height - 13 - bottomInset))
         if textScroll.frame != textFrame { textScroll.frame = textFrame }
         let contentSize = NSSize(width: textWidth, height: max(textFrame.height, metrics.textHeight + 2))
         if previewText.frame.size != contentSize { previewText.setFrameSize(contentSize) }
         remove.frame = NSRect(x: 12, y: body.minY + 6, width: 61, height: 21)
-        close.frame = NSRect(x: width - 33, y: body.maxY - 31, width: 24, height: 24)
+        cancelLink.frame = NSRect(x: 12, y: body.minY + 6, width: 43, height: 21)
     }
 }
