@@ -18,6 +18,16 @@ struct CodexWindowGeometry {
         self.occludingQuartzFrames = occludingQuartzFrames
     }
 
+    /// During a remount or display animation, AX can omit a real window or lag its
+    /// WindowServer frame. Only passive display polls may retain the recent pair.
+    func isEligible(trusted: Bool, paired: Bool, subrole: @autoclosure () -> String? = nil,
+                    missingPairAge: TimeInterval? = nil, previousHandleClaimed: Bool = false) -> Bool {
+        guard exposed else { return false }
+        if paired, let subrole = subrole() { return subrole == "AXStandardWindow" || subrole == "AXUnknown" }
+        if !trusted || paired { return true }
+        return !previousHandleClaimed && (missingPairAge.map { (0..<2).contains($0) } ?? false)
+    }
+
     static func inventory(_ rows: [[String: Any]], pid: pid_t) -> [Self] {
         var covers: [CGRect] = []
         var result: [Self] = []

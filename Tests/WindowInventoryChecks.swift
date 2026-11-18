@@ -38,6 +38,39 @@ enum WindowInventoryChecks {
         precondition(CodexWindowGeometry.match(stacked, axFrames: [first, first], focused: 1, previous: [1: 0, 2: 1])
                      == [1: 1, 2: 0])
         precondition(CodexWindowGeometry.match(visible, axFrames: [first, first], focused: nil, previous: [2: 1]).isEmpty)
+
+        // The website chat exposes two stacked, equally sized AX system dialogs.
+        // They still cover part of the chat, while each real chat keeps its shelf.
+        let websiteChat = CGRect(x: 0, y: 0, width: 1470, height: 923)
+        let popup = CGRect(x: 1176, y: 614, width: 332, height: 246)
+        let website = CodexWindowGeometry.inventory([row(17, popup), row(18, popup), row(1, websiteChat), row(2, second)], pid: pid)
+        let axFrames = [second, websiteChat, popup, popup]
+        let roles = ["AXStandardWindow", "AXStandardWindow", "AXSystemDialog", "AXSystemDialog"]
+        func trustedShelves(_ windows: [CodexWindowGeometry], _ frames: [CGRect], focused: Int) -> [ShelfWindowID] {
+            let pairs = CodexWindowGeometry.match(windows, axFrames: frames, focused: focused, previous: [:])
+            return windows.filter { row in
+                let pair = pairs[row.id]
+                return row.isEligible(trusted: true, paired: pair != nil, subrole: pair.map { roles[$0] })
+            }.map(\.id)
+        }
+        precondition(trustedShelves(website, axFrames, focused: 1) == [1, 2]) // ambiguous dialogs
+        precondition(trustedShelves(website, axFrames, focused: 2) == [1, 2]) // focused dialog pairs explicitly
+        let singleDialog = CodexWindowGeometry.inventory([row(17, popup), row(1, websiteChat), row(2, second)], pid: pid)
+        precondition(trustedShelves(singleDialog, Array(axFrames.prefix(3)), focused: 1) == [1, 2])
+        precondition(!website[1].exposed && website[2].occludingQuartzFrames.contains(popup))
+        precondition(website.filter { $0.isEligible(trusted: false, paired: false) }.map(\.id) == [17, 1, 2])
+
+        let chat = website[2]
+        precondition(chat.isEligible(trusted: true, paired: false, missingPairAge: 0.6))
+        let duringMove = CodexWindowGeometry.match(website, axFrames: [second, websiteChat.offsetBy(dx: 154, dy: 0), popup, popup],
+                                                   focused: 1, previous: [1: 1, 2: 0])
+        precondition(duringMove[1] == nil && !duringMove.values.contains(1))
+        precondition(chat.isEligible(trusted: true, paired: false, missingPairAge: 0.6,
+                                     previousHandleClaimed: duringMove.values.contains(1)))
+        precondition(!chat.isEligible(trusted: true, paired: false, missingPairAge: 0.6, previousHandleClaimed: true))
+        precondition(!chat.isEligible(trusted: true, paired: false, missingPairAge: 3))
+        precondition(!chat.isEligible(trusted: true, paired: false)) // actions never inherit the passive display grace
+        precondition(!stacked[1].isEligible(trusted: true, paired: true))
         print("Passed simultaneous-window enumeration, visibility, frame matching and ambiguous ownership.")
     }
 }

@@ -174,11 +174,17 @@ final class CodexHost {
     private let selectedTab = CodexSelectedChatTab()
     private let hostID = "com.openai.codex"
     fileprivate var target: WindowTarget {
-        didSet { if let window = target.window { knownWindow = window } }
+        didSet {
+            if let window = target.window {
+                knownWindow = window
+                lastPairedAt = ProcessInfo.processInfo.systemUptime
+            }
+        }
     }
     /// Retain explicit link bindings if Chromium briefly omits its AX window
     /// while remounting. The saved handle is never used to authorize a read.
     fileprivate private(set) var knownWindow: AXUIElement?
+    fileprivate private(set) var lastPairedAt: TimeInterval?
     private var last: CodexSurface?
     private var lastDiscovery = Date.distantPast
     private var selectedRow: CodexRowContext?
@@ -221,6 +227,7 @@ final class CodexHost {
     fileprivate init(target: WindowTarget, titleCatalog: LocalChatCatalog = LocalChatCatalog()) {
         self.target = target
         self.knownWindow = target.window
+        if target.window != nil { lastPairedAt = ProcessInfo.processInfo.systemUptime }
         self.titleCatalog = titleCatalog
     }
 
@@ -1096,7 +1103,7 @@ final class HostAccess: @unchecked Sendable {
     private var sessions: [ShelfWindowID: CodexHost] = [:]
     private var latestKeys = Set<String>()
 
-    private func targets() -> [WindowTarget] {
+    private func targets(keepingShelvesWhileAXRemounts: Bool = false) -> [WindowTarget] {
         guard let front = NSWorkspace.shared.frontmostApplication,
               front.bundleIdentifier == "com.openai.codex", !front.isHidden else { return [] }
         let pid = front.processIdentifier
@@ -1124,12 +1131,19 @@ final class HostAccess: @unchecked Sendable {
             session.knownWindow.flatMap { old in handles.firstIndex { CFEqual(old, $0.window) } }
         }
         let pairs = CodexWindowGeometry.match(windows, axFrames: handles.map(\.frame), focused: focused, previous: previous)
+        let claimedHandles = Set(pairs.values)
+        let now = ProcessInfo.processInfo.systemUptime
         return windows.compactMap { row in
-            guard row.exposed else { return nil }
             let index = pairs[row.id]
             let window = index.map { handles[$0].window }
-            if let window, let subrole = attribute(window, "AXSubrole") as? String,
-               subrole != "AXStandardWindow" && subrole != "AXUnknown" { return nil }
+            // A frame alone can be a secondary Electron surface. Keep a known
+            // shelf through a missing handle, never a handle now paired elsewhere.
+            let lastPair = keepingShelvesWhileAXRemounts ? sessions[row.id]?.lastPairedAt : nil
+            guard row.isEligible(trusted: trusted, paired: window != nil,
+                                 subrole: window.flatMap { attribute($0, "AXSubrole") as? String },
+                                 missingPairAge: lastPair.map { now - $0 },
+                                 previousHandleClaimed: previous[row.id].map(claimedHandles.contains) ?? false)
+            else { return nil }
             return WindowTarget(id: row.id, pid: pid, app: app, window: window, frame: row.frame,
                                 focused: trusted ? (index != nil && index == focused) : row.id == windows.first?.id,
                                 occludingQuartzFrames: row.occludingQuartzFrames)
@@ -1176,7 +1190,7 @@ final class HostAccess: @unchecked Sendable {
                         completion: @MainActor @Sendable @escaping ([WindowShelfObservation]) -> Void) {
         queue.async { [self] in
             latestKeys = savedKeys
-            observeNext(targets()[...], results: [], completion: completion)
+            observeNext(targets(keepingShelvesWhileAXRemounts: true)[...], results: [], completion: completion)
         }
     }
 
