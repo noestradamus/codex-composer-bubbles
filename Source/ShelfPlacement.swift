@@ -54,19 +54,29 @@ struct ShelfPlacements {
         for key in ["shelfPlacementV2", "shelfX", "shelfY"] { defaults.removeObject(forKey: key) }
     }
 
-    mutating func resolve(host: ShelfDisplay, connected: [ShelfDisplay], anchor: NSRect, count: Int, realAnchor: Bool)
+    mutating func resolve(host: ShelfDisplay, connected: [ShelfDisplay], anchor: NSRect, count: Int, realAnchor: Bool,
+                          slot: String? = nil, window: CGRect? = nil)
         -> (placement: ShelfPlacement, display: ShelfDisplay, didSave: Bool) {
-        if let placement = saved[host.id] {
+        let key = slot ?? host.id
+        if let placement = saved[key] {
             let destination = connected.first { $0.id == placement.displayID } ?? host
-            return (placement, destination, false)
+            if let window, placement.ownerFrame == nil {
+                let attached = placement.attached(to: window)
+                saved[key] = attached
+                return (attached, destination, true)
+            }
+            return (placement.following(window, on: host), destination, false)
         }
-        if !realAnchor, let estimate = estimates[host.id] { return (estimate, host, false) }
+        if !realAnchor, let estimate = estimates[key] {
+            return (estimate.following(window, on: host), host, false)
+        }
         let initial = ShelfPlacement.initial(anchor: anchor, visibleFrame: host.visibleFrame, displayFrame: host.frame,
             displayID: host.id, count: count, legacyOffset: realAnchor ? legacyOffset : nil)
+            .attached(to: window)
         if realAnchor {
-            pin(initial, for: host.id)
+            pin(initial, for: key)
         } else {
-            estimates[host.id] = initial
+            estimates[key] = initial
         }
         return (initial, host, realAnchor)
     }
@@ -81,6 +91,82 @@ struct ShelfPlacements {
         saved.removeValue(forKey: hostID)
         estimates.removeValue(forKey: hostID)
         legacyOffset = nil
+    }
+
+    mutating func discardEstimate(for key: String) { estimates.removeValue(forKey: key) }
+}
+
+/// CG window numbers identify a live window. The saved slots survive a Codex restart,
+/// when those numbers change. Match free slots using only the window's screen-local frame.
+final class WindowShelfPlacements {
+    private var positions: ShelfPlacements
+    private let defaults: UserDefaults?
+    private var slots: [String: [CGWindowID: String]] = [:]
+
+    init(defaults: UserDefaults? = nil) {
+        self.defaults = defaults
+        positions = defaults.map(ShelfPlacements.init(defaults:)) ?? ShelfPlacements()
+    }
+
+    private func slot(for id: CGWindowID, on host: ShelfDisplay, window: CGRect) -> String {
+        if let existing = slots[host.id]?[id] { return existing }
+        let used = Set(slots[host.id, default: [:]].values)
+        let prefix = host.id + "/window/"
+        let available = positions.saved.keys.filter {
+            !used.contains($0) && ($0 == host.id || $0.hasPrefix(prefix))
+        }
+        func distance(_ key: String) -> CGFloat {
+            guard let previous = positions.saved[key]?.ownerFrame else { return 0 }
+            return hypot(previous.midX - window.midX, previous.midY - window.midY)
+        }
+        var key = host.id
+        if let match = available.min(by: { (distance($0), $0) < (distance($1), $1) }) {
+            key = match
+        } else {
+            var index = 1
+            while used.contains(key) {
+                key = prefix + String(index)
+                index += 1
+            }
+        }
+        slots[host.id, default: [:]][id] = key
+        return key
+    }
+
+    /// Screen-local coordinates keep pins stable when displays change arrangement.
+    private func local(_ window: CGRect, on host: ShelfDisplay) -> CGRect {
+        CGRect(x: window.minX - host.frame.minX, y: host.frame.maxY - window.maxY,
+               width: window.width, height: window.height)
+    }
+
+    func resolve(id: CGWindowID, window: CGRect, host: ShelfDisplay, connected: [ShelfDisplay],
+                 anchor: CGRect, count: Int, realAnchor: Bool) -> (placement: ShelfPlacement, display: ShelfDisplay) {
+        let owner = local(window, on: host)
+        let key = slot(for: id, on: host, window: owner)
+        let result = positions.resolve(host: host, connected: connected, anchor: anchor, count: count,
+                                       realAnchor: realAnchor, slot: key, window: owner)
+        if result.didSave, let defaults { positions.save(to: defaults) }
+        return (result.placement, result.display)
+    }
+
+    func pin(_ placement: ShelfPlacement, id: CGWindowID, window: CGRect, host: ShelfDisplay) {
+        let owner = local(window, on: host)
+        let key = slot(for: id, on: host, window: owner)
+        positions.pin(placement.attached(to: owner), for: key)
+        if let defaults { positions.save(to: defaults) }
+    }
+
+    func reset(_ id: CGWindowID, on host: ShelfDisplay) {
+        guard let key = slots[host.id]?[id] else { return }
+        positions.reset(for: key)
+        if let defaults { positions.save(to: defaults) }
+    }
+
+    func release(_ id: CGWindowID) {
+        for display in Array(slots.keys) {
+            if let key = slots[display]?.removeValue(forKey: id) { positions.discardEstimate(for: key) }
+            if slots[display]?.isEmpty == true { slots.removeValue(forKey: display) }
+        }
     }
 }
 
@@ -97,8 +183,9 @@ struct ShelfLayout: Equatable {
 /// display arrangement changes or another monitor becomes the primary display.
 struct ShelfPlacement: Codable, Equatable {
     let displayID: String
-    private let left: CGFloat
-    private let fromTop: CGFloat
+    private var left: CGFloat
+    private var fromTop: CGFloat
+    fileprivate private(set) var ownerFrame: CGRect?
     let horizontal: Bool
     let widthLimit: CGFloat
     // Missing in placements saved by 1.5, whose outer controls were 279 pt apart as a group.
@@ -126,6 +213,85 @@ struct ShelfPlacement: Codable, Equatable {
 
     func grip(in displayFrame: NSRect) -> NSPoint {
         NSPoint(x: displayFrame.minX + left, y: displayFrame.maxY - fromTop)
+    }
+
+    fileprivate func attached(to frame: CGRect?) -> Self {
+        var result = self
+        result.ownerFrame = frame
+        return result
+    }
+
+    fileprivate func following(_ frame: CGRect?, on host: ShelfDisplay) -> Self {
+        guard let frame, let previous = ownerFrame, host.id == displayID else { return self }
+        var result = self
+        result.left += frame.minX - previous.minX
+        result.fromTop += frame.minY - previous.minY
+        if previous.contains(CGPoint(x: left, y: fromTop)) {
+            // When the window becomes narrower, an in-window pin stays with its owner.
+            result.left = min(result.left, frame.maxX - 1)
+            result.fromTop = min(result.fromTop, frame.maxY - 1)
+        }
+        result.ownerFrame = frame
+        return result
+    }
+
+    func layoutDisplay(_ destination: ShelfDisplay, host: ShelfDisplay?, window: CGRect) -> ShelfDisplay {
+        guard destination.id == host?.id, window.contains(grip(in: destination.frame)) else { return destination }
+        let room = window.intersection(destination.visibleFrame)
+        guard room.width >= 90, room.height >= Self.laneHeight + 8 else { return destination }
+        return ShelfDisplay(id: destination.id, frame: destination.frame, visibleFrame: room)
+    }
+
+    /// Constrain layout to an exposed part of the owner. Keep the original pin so
+    /// uncovering the window restores the location the user chose.
+    func visibleRoom(on display: ShelfDisplay, host: ShelfDisplay?, window: CGRect, count: Int,
+                     saveWidth: CGFloat, avoiding shelves: [CGRect], occludedBy windows: [CGRect]) -> CGRect? {
+        let preferred = layoutDisplay(display, host: host, window: window).visibleFrame
+        let original = layout(displayFrame: display.frame, visibleFrame: preferred,
+                              count: count, emptySaveWidth: saveWidth).frame
+        let obstacles = windows + shelves.map { $0.insetBy(dx: -2, dy: -2) }
+        guard obstacles.contains(where: { !$0.intersection(original).isEmpty }) else { return preferred }
+
+        let available = display.id == host?.id ? window.intersection(display.visibleFrame) : display.visibleFrame
+        let minWidth = GlassTabDrawing.controlSize.width + 4 + saveWidth + 8
+        let minHeight = Self.laneHeight + 8
+        var regions = [available]
+        for obstacle in obstacles {
+            var next: [CGRect] = []
+            func keep(_ candidate: CGRect) {
+                guard candidate.width >= minWidth, candidate.height >= minHeight,
+                      !next.contains(where: { $0.contains(candidate) }) else { return }
+                next.removeAll { candidate.contains($0) }
+                next.append(candidate)
+            }
+            for region in regions {
+                let cut = region.intersection(obstacle)
+                if cut.isEmpty { keep(region); continue }
+                // Keep the full span on each side. A narrow, full-height strip can
+                // still hold a vertical shelf even when the row cannot fit.
+                keep(CGRect(x: region.minX, y: region.minY, width: cut.minX - region.minX, height: region.height))
+                keep(CGRect(x: cut.maxX, y: region.minY, width: region.maxX - cut.maxX, height: region.height))
+                keep(CGRect(x: region.minX, y: region.minY, width: region.width, height: cut.minY - region.minY))
+                keep(CGRect(x: region.minX, y: cut.maxY, width: region.width, height: region.maxY - cut.maxY))
+            }
+            regions = next
+            if regions.isEmpty { return nil }
+        }
+
+        var nearest: CGRect?
+        var bestDistance = CGFloat.infinity
+        for region in regions {
+            let candidate = layout(displayFrame: display.frame, visibleFrame: region,
+                                   count: count, emptySaveWidth: saveWidth)
+            guard candidate.save.width >= saveWidth,
+                  count == 0 || candidate.list.height >= Self.laneHeight else { continue }
+            let distance = hypot(candidate.frame.midX - original.midX, candidate.frame.midY - original.midY)
+            if distance < bestDistance {
+                bestDistance = distance
+                nearest = region
+            }
+        }
+        return nearest
     }
 
     var isValid: Bool {

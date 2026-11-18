@@ -4,7 +4,7 @@ Requires macOS 13 or later and the Codex desktop app.
 
 Open **Composer Bubbles.app**, then return to your Codex window. The floating **Save** button first appears beside the prompt field. Drag the narrow glass tab with the single groove to position the shelf. The handle stays there as you type, switch chats, resize Codex, or reopen the companion.
 
-The shelf follows the active Codex window. The first time you use a different display, the shelf appears near that window’s composer. Drag the glass tab to choose its spot. Switching back restores the previous display’s position, even after you disconnect and reconnect it. Choose **Reset Bubble Position** from the companion’s menu to reset the position for the display you’re using.
+Each visible Codex window has a shelf while Codex is active. You can keep two windows side by side or on separate displays and see both chats’ bubbles at once. Click a bubble on either shelf to preview it. **Save** uses that shelf’s window. The keyboard shortcut and menu-bar commands use the focused window. Choose **Reset Bubble Position** to move that window’s shelf back to its composer.
 
 ## Appearance settings
 

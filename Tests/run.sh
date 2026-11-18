@@ -12,6 +12,6 @@ for test in StoreIsolationChecks NumberChecks; do
 done
 
 xcrun swiftc -swift-version 5 -parse-as-library -module-cache-path "$scratch_dir/module-cache" \
-  "$project_dir"/Source/{BubbleStyle,BubbleGlass,GlassTabDrawing,SaveButtonDrawing,ShelfPlacement}.swift \
-  "$project_dir/Tests/EmptyShelfChecks.swift" "$project_dir/Tests/DisplayPlacementChecks.swift" -o "$scratch_dir/EmptyShelfChecks"
+  "$project_dir"/Source/{BubbleStyle,BubbleGlass,GlassTabDrawing,SaveButtonDrawing,ShelfPlacement,CodexWindowGeometry}.swift \
+  "$project_dir"/Tests/{EmptyShelfChecks,DisplayPlacementChecks,WindowPlacementChecks,WindowInventoryChecks}.swift -o "$scratch_dir/EmptyShelfChecks"
 "$scratch_dir/EmptyShelfChecks"

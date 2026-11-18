@@ -37,41 +37,36 @@ private final class SaveShortcut {
     }
 }
 
-private func visibleHostQuartzWindow(of application: NSRunningApplication) -> CGRect? {
-    let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
-    guard let rows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else { return nil }
-    for row in rows {
-        guard row[kCGWindowOwnerPID as String] as? Int32 == application.processIdentifier,
-              row[kCGWindowLayer as String] as? Int == 0,
-              let bounds = row[kCGWindowBounds as String] as? NSDictionary,
-              let box = CGRect(dictionaryRepresentation: bounds),
-              box.width > 250, box.height > 160 else { continue }
-        return box
-    }
-    return nil
+@MainActor
+private final class WindowShelf {
+    let panel: BubblePanelController
+    var chat: String?
+    var savingDraft = false
+    var lastHealth: String?
+
+    init(panel: BubblePanelController) { self.panel = panel }
 }
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private let panel = BubblePanelController()
+    private var shelves: [ShelfWindowID: WindowShelf] = [:]
+    private var focusedShelfID: ShelfWindowID?
+    private lazy var placements = WindowShelfPlacements(defaults: defaults)
     private let host = HostAccess()
     private var observingPID: pid_t?
     private var refreshGeneration = 0
     private var refreshPending = false
-    private var displayedChat: String?
-    private var savingDraft = false
     private var store: BubbleStore!
     private var shortcut: SaveShortcut!
     private var status: NSStatusItem!
     private var timer: Timer?
     private var lastStatus: String?
     private let healthLog = Logger(subsystem: "local.composerbubbles.mac", category: "capture")
-    private var lastHealth: String?
     private let defaults = UserDefaults.standard
     private lazy var settings = BubbleSettingsController(
         defaults: defaults,
-        onChange: { [weak self] style in self?.panel.setStyle(style) },
-        onSaveStyleChange: { [weak self] style in self?.panel.setSaveStyle(style) }
+        onChange: { [weak self] style in self?.shelves.values.forEach { $0.panel.setStyle(style) } },
+        onSaveStyleChange: { [weak self] style in self?.shelves.values.forEach { $0.panel.setSaveStyle(style) } }
     )
     private var isHidden: Bool { defaults.bool(forKey: "hideShelf") }
     private var pendingRemoval: SavedBubble?
@@ -80,6 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
     private struct LinkRequest {
         let id = UUID()
+        let windowID: ShelfWindowID
         let context: CodexLinkContext
         let initialCopy: Int
         let action: LinkAction
@@ -106,35 +102,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         status.menu = menu
-        panel.restorePlacements(ShelfPlacements(defaults: defaults))
-        panel.onPlacementsChanged = { [defaults] in $0.save(to: defaults) }
-        panel.setStyle(.load(from: defaults))
-        panel.setSaveStyle(.load(from: defaults))
-        panel.onSettings = { [weak self] in self?.openSettings() }
-        panel.onSave = { [weak self] in self?.saveDraft() }
-        panel.onDropText = { [weak self] text in self?.saveText(text) ?? false }
-        panel.onRemove = { [weak self] id in self?.removeBubble(id) }
-        panel.canUseBubble = { [weak self] id in self?.canUseBubble(id) ?? false }
-        panel.verifyPreview = { [weak self] id, completion in
-            guard let self, let item = store.bubbles.first(where: { $0.id == id }),
-                  let owner = canonicalBubbleChat(item.chatKey), displayedChat == owner else {
-                completion(false)
-                return
-            }
-            let generation = refreshGeneration
-            host.perform({ canonicalBubbleChat($0.currentChatKey()) == owner }) { [weak self] allowed in
-                guard let self, refreshGeneration == generation, displayedChat == owner, !isHidden,
-                      NSWorkspace.shared.frontmostApplication?.bundleIdentifier == hostBundleID else {
-                    completion(false)
-                    return
-                }
-                completion(allowed)
-                if !allowed { refresh() }
-            }
-        }
-        panel.onCancelLink = { [weak self] in self?.finishLinkRequest() }
         shortcut = SaveShortcut { [weak self] in
-            DispatchQueue.main.async { self?.saveDraft() }
+            DispatchQueue.main.async {
+                guard let self, let id = self.host.focusedWindowID() else { return }
+                self.saveDraft(in: id)
+            }
         }
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(workspaceChanged), name: NSWorkspace.didActivateApplicationNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(workspaceChanged), name: NSWorkspace.activeSpaceDidChangeNotification, object: nil)
@@ -146,35 +118,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refresh()
     }
 
-    private func reportHealth(_ observation: ShelfObservation, editor: Bool, chat: String?, visibleCount: Int) {
-        let status = "Accessibility=\(observation.trusted) composer=\(editor) chatIdentified=\(chat != nil) identitySource=\(observation.source) visibleBubbles=\(visibleCount)"
-        if status != lastHealth {
-            healthLog.notice("\(status, privacy: .public)")
-            lastHealth = status
+    private func makeShelf(for id: ShelfWindowID) -> WindowShelf {
+        let panel = BubblePanelController(windowID: id, placements: placements)
+        let shelf = WindowShelf(panel: panel)
+        panel.setStyle(.load(from: defaults))
+        panel.setSaveStyle(.load(from: defaults))
+        panel.onSettings = { [weak self] in self?.openSettings() }
+        panel.onSave = { [weak self] in self?.saveDraft(in: id) }
+        panel.onDropText = { [weak self] text in self?.saveText(text, in: id) ?? false }
+        panel.onRemove = { [weak self] bubble in self?.removeBubble(bubble, in: id) }
+        panel.canUseBubble = { [weak self] bubble in self?.canUseBubble(bubble, in: id) ?? false }
+        panel.verifyPreview = { [weak self, weak shelf] bubble, completion in
+            guard let self, let shelf, self.shelves[id] === shelf,
+                  let item = self.store.bubbles.first(where: { $0.id == bubble }),
+                  let owner = canonicalBubbleChat(item.chatKey), shelf.chat == owner else {
+                completion(false)
+                return
+            }
+            let generation = self.refreshGeneration
+            self.host.perform(in: id, { canonicalBubbleChat($0.currentChatKey()) == owner }) { [weak self, weak shelf] allowed in
+                guard let self, let shelf, self.shelves[id] === shelf, self.refreshGeneration == generation,
+                      shelf.chat == owner, !self.isHidden,
+                      NSWorkspace.shared.frontmostApplication?.bundleIdentifier == self.hostBundleID else {
+                    completion(false)
+                    return
+                }
+                completion(allowed == true)
+                if allowed != true { self.refresh() }
+            }
         }
+        panel.onCancelLink = { [weak self] in
+            if self?.linkRequest?.windowID == id { self?.finishLinkRequest() }
+        }
+        return shelf
     }
 
-    private func currentChat() -> String? {
-        host.read { canonicalBubbleChat($0.currentChatKey()) }
+    private func currentChat(in windowID: ShelfWindowID) -> String? {
+        host.read(in: windowID) { canonicalBubbleChat($0.currentChatKey()) } ?? nil
     }
 
-    private func canUseBubble(_ id: UUID) -> Bool {
-        guard let chat = currentChat(),
+    private func canUseBubble(_ id: UUID, in windowID: ShelfWindowID) -> Bool {
+        guard let shelf = shelves[windowID], let chat = shelf.chat,
               let item = store.bubbles.first(where: { $0.id == id }),
-              canonicalBubbleChat(item.chatKey) == chat else {
+              canonicalBubbleChat(item.chatKey) == chat, currentChat(in: windowID) == chat else {
             refresh()
             return false
         }
         return true
     }
 
+    private func hideShelves() {
+        for shelf in shelves.values {
+            shelf.chat = nil
+            shelf.panel.hide()
+        }
+    }
+
     @objc private func workspaceChanged() {
         if observingPID != nil {
             refreshGeneration += 1
             observingPID = nil
-            displayedChat = nil
             host.reset()
-            panel.hide()
+            hideShelves()
         }
         refresh()
     }
@@ -185,12 +190,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if observingPID != nil {
                 observingPID = nil
                 refreshGeneration += 1
-                displayedChat = nil
                 host.reset()
             }
             if linkRequest != nil { finishLinkRequest() }
             shortcut?.setActive(false)
-            panel.hide()
+            hideShelves()
             return
         }
         shortcut.setActive(true)
@@ -203,33 +207,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshPending = true
         let generation = refreshGeneration
         let keys = Set(store.bubbles.compactMap { canonicalBubbleChat($0.chatKey) })
-        host.observe(savedKeys: keys) { [weak self] observation in
+        host.observeWindows(savedKeys: keys) { [weak self] observations in
             guard let self else { return }
             refreshPending = false
-            guard let observation, generation == refreshGeneration, !isHidden,
+            guard generation == refreshGeneration, !isHidden,
                   let active = NSWorkspace.shared.frontmostApplication,
                   active.bundleIdentifier == hostBundleID, active.processIdentifier == pid,
                   !active.isHidden else {
                 refresh()
                 return
             }
-            updateShelf(with: observation, front: active)
+            updateShelves(observations)
         }
     }
 
-    private func updateShelf(with observation: ShelfObservation, front: NSRunningApplication) {
-        let chat = canonicalBubbleChat(observation.chatKey)
-        displayedChat = chat
-        let visible = store.visible(in: chat)
-        let screens = NSScreen.screens.map { (frame: $0.frame, visibleFrame: $0.visibleFrame) }
-        guard let geometry = observation.placement(on: screens, fallbackQuartzWindow: visibleHostQuartzWindow(of: front),
-                                                   fallbackScreen: NSScreen.main?.visibleFrame) else {
-            panel.hide()
-            return
+    private func updateShelves(_ observations: [WindowShelfObservation]) {
+        focusedShelfID = observations.first(where: \.focused)?.id
+        let visibleIDs = Set(observations.map(\.id))
+        for id in shelves.keys.filter({ !visibleIDs.contains($0) }) {
+            if linkRequest?.windowID == id { finishLinkRequest() }
+            shelves.removeValue(forKey: id)?.panel.retire()
         }
-        reportHealth(observation, editor: geometry.realAnchor, chat: chat, visibleCount: visible.count)
-        panel.setChatIdentified(chat != nil, accessibilityEnabled: observation.trusted)
-        panel.show(bubbles: visible, anchor: geometry.anchor, screen: geometry.screen, realAnchor: geometry.realAnchor)
+        let screens = NSScreen.screens.map { (frame: $0.frame, visibleFrame: $0.visibleFrame) }
+        guard let primary = screens.first else { hideShelves(); return }
+        func appKitFrame(_ quartz: CGRect) -> CGRect {
+            CGRect(x: quartz.minX, y: primary.frame.maxY - quartz.maxY, width: quartz.width, height: quartz.height)
+        }
+        var occupied: [CGRect] = []
+        // A focus change can reorder the window list. Keep placement order stable.
+        for window in observations.sorted(by: { $0.id < $1.id }) {
+            let observation = window.observation
+            let shelf = shelves[window.id] ?? makeShelf(for: window.id)
+            shelves[window.id] = shelf
+            shelf.chat = canonicalBubbleChat(observation.chatKey)
+            guard let raw = observation.windowQuartzFrame,
+                  let geometry = observation.placement(on: screens, fallbackQuartzWindow: nil, fallbackScreen: nil) else {
+                shelf.panel.hide()
+                continue
+            }
+            let bubbles = store.visible(in: shelf.chat)
+            let health = "Accessibility=\(observation.trusted) composer=\(geometry.realAnchor) chatIdentified=\(shelf.chat != nil) identitySource=\(observation.source) visibleBubbles=\(bubbles.count)"
+            if health != shelf.lastHealth {
+                shelf.lastHealth = health
+                healthLog.notice("Window \(window.id, privacy: .public) \(health, privacy: .public)")
+            }
+            shelf.panel.setChatIdentified(shelf.chat != nil, accessibilityEnabled: observation.trusted)
+            shelf.panel.show(bubbles: bubbles, anchor: geometry.anchor, screen: geometry.screen,
+                             realAnchor: geometry.realAnchor, hostFrame: appKitFrame(raw), avoiding: occupied,
+                             occludedBy: window.occludingQuartzFrames.map(appKitFrame))
+            if let panelFrame = shelf.panel.frame { occupied.append(panelFrame) }
+        }
     }
 
     // AX references in these immutable results go straight back to the host queue.
@@ -239,12 +266,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case choices(String?), changed, failure(String)
     }
 
-    @objc private func saveDraft() {
-        guard !savingDraft else { return }
-        savingDraft = true
+    private func saveDraft(in windowID: ShelfWindowID) {
+        let shelf = shelves[windowID] ?? makeShelf(for: windowID)
+        shelves[windowID] = shelf
+        guard !shelf.savingDraft else { return }
+        shelf.savingDraft = true
         let generation = refreshGeneration
-        let intendedChat = displayedChat
-        host.perform({ host -> DraftRead in
+        let intendedChat = shelf.chat
+        host.perform(in: windowID, activate: true, { host -> DraftRead in
             guard let surface = host.current() else { return .choices(nil) }
             guard let chat = canonicalBubbleChat(surface.chatKey) else {
                 guard let context = host.linkContext(for: surface) else { return .changed }
@@ -258,12 +287,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 guard canonicalBubbleChat(host.currentChatKey()) == chat else { return .changed }
                 return .captured(surface, text)
             } catch { return .choices(error.localizedDescription) }
-        }) { [weak self] outcome in
-            guard let self else { return }
-            savingDraft = false
-            guard generation == refreshGeneration,
+        }) { [weak self, weak shelf] outcome in
+            guard let self, let shelf else { return }
+            shelf.savingDraft = false
+            guard shelves[windowID] === shelf, !isHidden,
                   NSWorkspace.shared.frontmostApplication?.bundleIdentifier == hostBundleID else { return }
-            switch outcome {
+            // Raising a visible full-screen Codex window can change the active Space.
+            if generation != refreshGeneration && host.focusedWindowID() != windowID { return }
+            switch outcome ?? .choices(nil) {
             case .captured(let surface, let text):
                 guard persist(text, in: surface.chatKey) else { return }
                 // Clearing occurs only after a durable save. The worker rechecks the
@@ -272,10 +303,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     if !cleared { self?.lastStatus = "Saved. The original draft is still in the composer." }
                 }
             case .link(let context, let text):
-                beginLinkRequest(text.map(LinkAction.currentDraft) ?? .show, in: context)
+                beginLinkRequest(text.map(LinkAction.currentDraft) ?? .show, for: windowID, context: context)
             case .choices(let message):
                 if let message { lastStatus = message }
-                showCaptureChoices()
+                showCaptureChoices(in: windowID)
             case .changed: explainUnknownChat()
             case .failure(let message): showError(message)
             }
@@ -283,8 +314,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @discardableResult
-    private func saveText(_ text: String) -> Bool {
-        guard let chat = currentChat() else { return beginLinkRequest(.selectedText(text)) }
+    private func saveText(_ text: String, in windowID: ShelfWindowID) -> Bool {
+        guard let chat = currentChat(in: windowID) else { return beginLinkRequest(.selectedText(text), for: windowID) }
+        if let shown = shelves[windowID]?.chat, shown != chat { refresh(); return false }
         return persist(text, in: chat)
     }
 
@@ -300,8 +332,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func removeBubble(_ id: UUID) {
-        guard canUseBubble(id), let item = store.bubbles.first(where: { $0.id == id }) else { return }
+    private func removeBubble(_ id: UUID, in windowID: ShelfWindowID) {
+        guard canUseBubble(id, in: windowID), let item = store.bubbles.first(where: { $0.id == id }) else { return }
         do {
             try store.remove(id)
             pendingRemoval = item
@@ -310,8 +342,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch { showError(error.localizedDescription) }
     }
 
-    @objc private func undoRemoval() {
-        guard let item = pendingRemoval, let chat = currentChat(), chat == canonicalBubbleChat(item.chatKey) else { return }
+    @objc private func undoRemoval(_ sender: NSMenuItem) {
+        guard let windowID = sender.representedObject as? ShelfWindowID, let item = pendingRemoval,
+              let owner = canonicalBubbleChat(item.chatKey), currentChat(in: windowID) == owner else { return }
         do {
             try store.restore(item)
             pendingRemoval = nil
@@ -322,16 +355,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private struct Assignment {
         let id: UUID
+        let windowID: ShelfWindowID
         let chat: String?
     }
 
     @objc private func assignEarlierBubble(_ sender: NSMenuItem) {
         guard let choice = sender.representedObject as? Assignment else { return }
         guard let chat = choice.chat else {
-            beginLinkRequest(.assignEarlier(choice.id))
+            beginLinkRequest(.assignEarlier(choice.id), for: choice.windowID)
             return
         }
-        guard currentChat() == chat else {
+        guard currentChat(in: choice.windowID) == chat else {
             explainUnknownChat()
             return
         }
@@ -349,15 +383,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         showError(message)
     }
 
-    @objc private func linkThisChat() {
-        beginLinkRequest(.show)
+    @objc private func linkThisChat(_ sender: NSMenuItem) {
+        guard let windowID = sender.representedObject as? ShelfWindowID else { return }
+        beginLinkRequest(.show, for: windowID)
     }
 
     @discardableResult
-    private func beginLinkRequest(_ action: LinkAction, in existing: CodexLinkContext? = nil) -> Bool {
+    private func beginLinkRequest(_ action: LinkAction, for windowID: ShelfWindowID, context existing: CodexLinkContext? = nil) -> Bool {
         finishLinkRequest()
-        guard let context = existing ?? host.read({ $0.linkContext() }) else { explainUnknownChat(); return false }
-        let request = LinkRequest(context: context, initialCopy: NSPasteboard.general.changeCount,
+        guard let panel = shelves[windowID]?.panel,
+              let context = host.read(in: windowID, activate: true, { host -> CodexLinkContext? in
+                  if let existing { return host.inLinkWindow(existing) ? existing : nil }
+                  return host.linkContext()
+              }) ?? nil else { explainUnknownChat(); return false }
+        let request = LinkRequest(windowID: windowID, context: context, initialCopy: NSPasteboard.general.changeCount,
                                   action: action, until: Date().addingTimeInterval(50))
         let verb: String
         switch action {
@@ -380,13 +419,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func finishLinkRequest() {
         linkTimer?.invalidate()
         linkTimer = nil
+        let windowID = linkRequest?.windowID
         linkRequest = nil
-        panel.finishLinkPrompt()
+        if let windowID { shelves[windowID]?.panel.finishLinkPrompt() }
     }
 
     private func checkRequestedLink(_ id: UUID) {
         guard let request = linkRequest, request.id == id else { return }
-        guard Date() < request.until, host.read({ $0.inLinkWindow(request.context) }) else {
+        let windowID = request.windowID
+        guard Date() < request.until, host.read(in: windowID, { $0.inLinkWindow(request.context) }) == true else {
             finishLinkRequest()
             return
         }
@@ -400,7 +441,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
               let url = URL(string: string.trimmingCharacters(in: .whitespacesAndNewlines)),
               let chat = CodexHost.copiedChatKey(url) else { return }
         finishLinkRequest()
-        guard let scope = host.read({ $0.acceptCopiedChat(chat, for: request.context) }) else {
+        guard let scope = host.read(in: windowID, { $0.acceptCopiedChat(chat, for: request.context) }) ?? nil else {
             showError("The chat changed while linking. Click Save in the chat you want to use.")
             return
         }
@@ -412,41 +453,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .selectedText(let text):
                 try store.save(text, in: chat)
             case .currentDraft(let original):
-                let text = try host.read { try $0.draftForLink(in: request.context) }
-                guard original == text, let confirmed = host.read({ $0.acceptCopiedChat(chat, for: request.context) }) else {
+                guard let text = try host.read(in: windowID, { try $0.draftForLink(in: request.context) }),
+                      original == text, let confirmed = host.read(in: windowID, { $0.acceptCopiedChat(chat, for: request.context) }) ?? nil else {
                     showError("The draft or chat changed. Click Save again to keep the current draft.")
                     return
                 }
                 try store.save(text, in: chat)
-                if confirmed == .currentChat, let surface = host.read({ $0.current() }), surface.chatKey == chat {
-                    _ = host.read { $0.clearIfUnchanged(text, in: surface) }
+                if confirmed == .currentChat {
+                    _ = host.read(in: windowID) { host in
+                        guard let surface = host.current(), surface.chatKey == chat else { return false }
+                        return host.clearIfUnchanged(text, in: surface)
+                    }
                 }
             }
         } catch { showError(error.localizedDescription); return }
         lastStatus = nil
         refresh()
-        if scope == .singleAction, host.read({ $0.inLinkWindow(request.context) }), currentChat() == nil {
-            panel.showLinkedBubbles(store.visible(in: chat))
+        if scope == .singleAction, host.read(in: windowID, { $0.inLinkWindow(request.context) }) == true,
+           currentChat(in: windowID) == nil {
+            shelves[windowID]?.panel.showLinkedBubbles(store.visible(in: chat))
         }
     }
 
-    private func menuItem(_ title: String, _ action: Selector? = nil) -> NSMenuItem {
+    private func menuItem(_ title: String, _ action: Selector? = nil, window: ShelfWindowID? = nil) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
+        item.representedObject = window
         return item
     }
 
-    private func showCaptureChoices() {
+    private func showCaptureChoices(in windowID: ShelfWindowID) {
         let menu = NSMenu()
         menu.addItem(menuItem("Press Tab in Codex to accept a prediction."))
         menu.addItem(menuItem("Drag selected text onto Save, or copy it and use"))
-        menu.addItem(menuItem("Save Copied Text as Bubble", #selector(pasteBubble)))
+        menu.addItem(menuItem("Save Copied Text as Bubble", #selector(pasteBubble(_:)), window: windowID))
         if !AXIsProcessTrusted() {
             menu.addItem(.separator())
             menu.addItem(menuItem("Enable Direct Draft Capture…", #selector(enableCapture)))
         }
-        if displayedChat == nil {
-            menu.addItem(menuItem("Link This Chat…", #selector(linkThisChat)))
+        if shelves[windowID]?.chat == nil {
+            menu.addItem(menuItem("Link This Chat…", #selector(linkThisChat(_:)), window: windowID))
         }
         menu.addItem(.separator())
         menu.addItem(menuItem("Settings…", #selector(openSettings)))
@@ -469,13 +515,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return false
     }
 
-    @objc private func pasteBubble() {
+    @objc private func pasteBubble(_ sender: NSMenuItem) {
+        guard let windowID = sender.representedObject as? ShelfWindowID else { return }
         guard let text = NSPasteboard.general.string(forType: .string),
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             showError("Copy the suggestion text in Codex first.")
             return
         }
-        saveText(text)
+        saveText(text, in: windowID)
     }
 
     @objc private func enableCapture() {
@@ -488,8 +535,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refresh()
     }
 
-    @objc private func resetPosition() {
-        panel.resetPlacement()
+    @objc private func resetPosition(_ sender: NSMenuItem) {
+        guard let windowID = sender.representedObject as? ShelfWindowID else { return }
+        shelves[windowID]?.panel.resetPlacement()
         refresh()
     }
 
@@ -497,7 +545,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         menu.addItem(menuItem(version.map { "Composer Bubbles " + $0 } ?? "Composer Bubbles"))
-        let chat = displayedChat
+        let windowID = host.focusedWindowID() ?? focusedShelfID
+        let chat = windowID.flatMap { shelves[$0]?.chat }
         if let chat {
             let count = store.visible(in: chat).count
             menu.addItem(menuItem("Current chat · " + String(count) + (count == 1 ? " bubble" : " bubbles")))
@@ -509,16 +558,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let settingsItem = menuItem("Settings…", #selector(openSettings))
         settingsItem.keyEquivalent = ","
         menu.addItem(settingsItem)
-        menu.addItem(menuItem("Save Copied Text as Bubble", #selector(pasteBubble)))
-        if chat == nil {
-            menu.addItem(menuItem("Link This Chat…", #selector(linkThisChat)))
+        if let windowID {
+            menu.addItem(menuItem("Save Copied Text as Bubble", #selector(pasteBubble(_:)), window: windowID))
+            if chat == nil {
+                menu.addItem(menuItem("Link This Chat…", #selector(linkThisChat(_:)), window: windowID))
+            }
         }
         if !AXIsProcessTrusted() {
             menu.addItem(menuItem("Enable Direct Draft Capture…", #selector(enableCapture)))
         } else {
             menu.addItem(menuItem("Save Draft in Codex    ⌥⇧⌘B"))
         }
-        if !store.unassigned.isEmpty {
+        if let windowID, !store.unassigned.isEmpty {
             let parent = menuItem("Move Earlier Bubble to This Chat")
             let choices = NSMenu()
             for bubble in store.unassigned {
@@ -526,18 +577,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let title = label.count > 64 ? String(label.prefix(63)) + "…" : label
                 let item = menuItem(title, #selector(assignEarlierBubble(_:)))
                 item.toolTip = bubble.text
-                item.representedObject = Assignment(id: bubble.id, chat: chat)
+                item.representedObject = Assignment(id: bubble.id, windowID: windowID, chat: chat)
                 choices.addItem(item)
             }
             parent.submenu = choices
             menu.addItem(parent)
         }
         if let chat, let item = pendingRemoval, canonicalBubbleChat(item.chatKey) == chat {
-            menu.addItem(menuItem("Undo Remove Bubble", #selector(undoRemoval)))
+            menu.addItem(menuItem("Undo Remove Bubble", #selector(undoRemoval(_:)), window: windowID))
         }
         menu.addItem(.separator())
         menu.addItem(menuItem(isHidden ? "Show Bubbles in Codex" : "Hide Bubbles in Codex", #selector(toggleShelf)))
-        menu.addItem(menuItem("Reset Bubble Position", #selector(resetPosition)))
+        if let windowID {
+            menu.addItem(menuItem("Reset Bubble Position", #selector(resetPosition(_:)), window: windowID))
+        }
         menu.addItem(.separator())
         menu.addItem(menuItem("View Releases on GitHub…", #selector(viewReleases)))
         let quit = NSMenuItem(title: "Quit Composer Bubbles", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")

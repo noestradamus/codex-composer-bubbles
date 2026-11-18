@@ -5,11 +5,36 @@ import ApplicationServices
 // Only immutable AX handles cross a queue boundary. Reads and edits on those
 // handles are confined to HostAccess.
 struct CodexSurface: @unchecked Sendable {
+    fileprivate let windowID: ShelfWindowID
     fileprivate let quartzFrame: CGRect
     let chatKey: String
     fileprivate let editor: AXUIElement
     fileprivate let window: AXUIElement
     fileprivate let process: pid_t
+}
+
+struct WindowShelfObservation: Sendable {
+    let id: ShelfWindowID
+    let focused: Bool
+    let observation: ShelfObservation
+    let occludingQuartzFrames: [CGRect]
+
+    init(id: ShelfWindowID, focused: Bool, observation: ShelfObservation, occludingQuartzFrames: [CGRect] = []) {
+        self.id = id
+        self.focused = focused
+        self.observation = observation
+        self.occludingQuartzFrames = occludingQuartzFrames
+    }
+}
+
+private struct WindowTarget {
+    let id: ShelfWindowID
+    let pid: pid_t
+    let app: AXUIElement
+    let window: AXUIElement?
+    let frame: CGRect
+    let focused: Bool
+    let occludingQuartzFrames: [CGRect]
 }
 
 /// The label is an extra invalidation check for a recycled AX element. It is
@@ -118,6 +143,29 @@ struct CodexAliasIndex {
     }
 }
 
+private func attribute(_ item: AXUIElement, _ name: String) -> CFTypeRef? {
+    var output: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(item, name as CFString, &output) == .success else { return nil }
+    return output
+}
+
+private func element(_ item: AXUIElement, _ name: String) -> AXUIElement? {
+    guard let result = attribute(item, name), CFGetTypeID(result) == AXUIElementGetTypeID() else { return nil }
+    return (result as! AXUIElement)
+}
+
+private func frame(_ item: AXUIElement) -> CGRect? {
+    guard let p = attribute(item, "AXPosition"), CFGetTypeID(p) == AXValueGetTypeID(),
+          let s = attribute(item, "AXSize"), CFGetTypeID(s) == AXValueGetTypeID() else { return nil }
+    var origin = CGPoint.zero
+    var size = CGSize.zero
+    guard AXValueGetValue(p as! AXValue, .cgPoint, &origin),
+          AXValueGetValue(s as! AXValue, .cgSize, &size),
+          size.width > 0, size.height > 0 else { return nil }
+    return CGRect(origin: origin, size: size)
+}
+
+
 /// Reads the host's accessibility controls and resolves visible client IDs. The pasteboard and key events
 /// are deliberately not part of the automatic capture path.
 final class CodexHost {
@@ -125,6 +173,12 @@ final class CodexHost {
     private let chatTitle = CodexChatTitle()
     private let selectedTab = CodexSelectedChatTab()
     private let hostID = "com.openai.codex"
+    fileprivate var target: WindowTarget {
+        didSet { if let window = target.window { knownWindow = window } }
+    }
+    /// Retain explicit link bindings if Chromium briefly omits its AX window
+    /// while remounting. The saved handle is never used to authorize a read.
+    fileprivate private(set) var knownWindow: AXUIElement?
     private var last: CodexSurface?
     private var lastDiscovery = Date.distantPast
     private var selectedRow: CodexRowContext?
@@ -164,8 +218,16 @@ final class CodexHost {
     private(set) var primaryScopeToken: String?
     private(set) var isForeignContext = false
 
-    init(titleCatalog: LocalChatCatalog = LocalChatCatalog()) {
+    fileprivate init(target: WindowTarget, titleCatalog: LocalChatCatalog = LocalChatCatalog()) {
+        self.target = target
+        self.knownWindow = target.window
         self.titleCatalog = titleCatalog
+    }
+
+    fileprivate func matches(_ other: WindowTarget) -> Bool {
+        guard target.pid == other.pid else { return false }
+        if let knownWindow, let window = other.window { return CFEqual(knownWindow, window) }
+        return true
     }
 
     func current() -> CodexSurface? { current(freshScan: true) }
@@ -174,18 +236,12 @@ final class CodexHost {
         observe(focusedHostWindow(), freshScan: freshScan, forShelf: false).surface
     }
 
-    func currentChatKey() -> String? { observe(focusedHostWindow(), freshScan: true, forShelf: false).key }
+    func currentChatKey() -> String? { observe(addressedWindow(), freshScan: true, forShelf: false).key }
 
     /// Window geometry and chat identity must belong to the same focus snapshot.
-    func shelfObservation() -> ShelfObservation? {
-        let focus = focusedHostWindow()
-        let reading = observe(focus, freshScan: false, forShelf: true)
-        if let focus, let currentWindow = element(focus.app, "AXFocusedWindow"),
-           !CFEqual(focus.window, currentWindow) {
-            clearReturnObservation()
-            return nil
-        }
-        return ShelfObservation(quartzFrame: reading.surface?.quartzFrame, windowQuartzFrame: reading.windowFrame,
+    func shelfObservation() -> ShelfObservation {
+        let reading = observe(addressedWindow(), freshScan: false, forShelf: true)
+        return ShelfObservation(quartzFrame: reading.surface?.quartzFrame, windowQuartzFrame: reading.windowFrame ?? target.frame,
                                 chatKey: reading.key, source: identitySource, trusted: AXIsProcessTrusted())
     }
 
@@ -221,7 +277,7 @@ final class CodexHost {
         // editor. Keep its handle for rediscovery; every reuse hit-tests anew.
         guard let editor, let rawFrame = frame(editor), let windowFrame, rawFrame.intersects(windowFrame)
         else { return (nil, key, windowFrame) }
-        let surface = CodexSurface(quartzFrame: rawFrame, chatKey: key ?? "unresolved",
+        let surface = CodexSurface(windowID: target.id, quartzFrame: rawFrame, chatKey: key ?? "unresolved",
                                    editor: editor, window: window, process: pid)
         last = surface
         return (surface, key, windowFrame)
@@ -340,11 +396,38 @@ final class CodexHost {
 
     private func focusedHostWindow() -> FocusedWindow? {
         guard AXIsProcessTrusted(), let front = NSWorkspace.shared.frontmostApplication,
-              front.bundleIdentifier == hostID else { return nil }
-        let app = AXUIElementCreateApplication(front.processIdentifier)
-        AXUIElementSetMessagingTimeout(app, 0.15)
-        guard let window = element(app, "AXFocusedWindow") else { return nil }
-        return (front.processIdentifier, app, window)
+              front.bundleIdentifier == hostID, front.processIdentifier == target.pid,
+              let expected = target.window, let window = element(target.app, "AXFocusedWindow"),
+              CFEqual(expected, window) else { return nil }
+        return (target.pid, target.app, window)
+    }
+
+    /// Passive reads may use an explicitly identified background window. Draft access and
+    /// writes use focusedHostWindow() and also require the original editor and chat.
+    private func addressedWindow() -> FocusedWindow? {
+        guard let window = target.window, AXIsProcessTrusted(),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid else { return nil }
+        return (target.pid, target.app, window)
+    }
+
+    fileprivate func focusTarget() -> Bool {
+        guard let front = NSWorkspace.shared.frontmostApplication,
+              front.bundleIdentifier == hostID, front.processIdentifier == target.pid else { return false }
+        guard let window = target.window else {
+            return !AXIsProcessTrusted() && Self.frontWindowNumber(for: front) == target.id
+        }
+        if focusedHostWindow() != nil { return true }
+        guard AXUIElementPerformAction(window, kAXRaiseAction as CFString) == .success else { return false }
+        if focusedHostWindow() != nil { return true }
+        if settable(window, "AXMain") {
+            _ = AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+        }
+        // Electron may publish the window-focus change just after AXRaise returns.
+        for _ in 0..<4 {
+            if focusedHostWindow() != nil { return true }
+            Thread.sleep(forTimeInterval: 0.015)
+        }
+        return focusedHostWindow() != nil
     }
 
     /// In Electron, AXDocument and AXURL may identify only the app shell. The
@@ -886,28 +969,6 @@ final class CodexHost {
         return nil
     }
 
-    private func attribute(_ item: AXUIElement, _ name: String) -> CFTypeRef? {
-        var output: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(item, name as CFString, &output) == .success else { return nil }
-        return output
-    }
-
-    private func element(_ item: AXUIElement, _ name: String) -> AXUIElement? {
-        guard let result = attribute(item, name), CFGetTypeID(result) == AXUIElementGetTypeID() else { return nil }
-        return (result as! AXUIElement)
-    }
-
-    private func frame(_ item: AXUIElement) -> CGRect? {
-        guard let p = attribute(item, "AXPosition"), CFGetTypeID(p) == AXValueGetTypeID(),
-              let s = attribute(item, "AXSize"), CFGetTypeID(s) == AXValueGetTypeID() else { return nil }
-        var origin = CGPoint.zero
-        var size = CGSize.zero
-        guard AXValueGetValue(p as! AXValue, .cgPoint, &origin),
-              AXValueGetValue(s as! AXValue, .cgSize, &size),
-              size.width > 0, size.height > 0 else { return nil }
-        return CGRect(origin: origin, size: size)
-    }
-
     private func settable(_ item: AXUIElement, _ name: String) -> Bool {
         var yes = DarwinBoolean(false)
         return AXUIElementIsAttributeSettable(item, name as CFString, &yes) == .success && yes.boolValue
@@ -936,7 +997,8 @@ extension CodexHost {
         guard let front = NSWorkspace.shared.frontmostApplication, front.bundleIdentifier == hostID else { return nil }
         guard let (pid, _, window) = focusedHostWindow() else {
             // A fresh user-copied link also works for manual saving without Accessibility.
-            guard surface == nil, !AXIsProcessTrusted(), let number = Self.frontWindowNumber(for: front) else { return nil }
+            guard surface == nil, !AXIsProcessTrusted(), let number = Self.frontWindowNumber(for: front),
+                  target.id == number else { return nil }
             return CodexLinkContext(pid: front.processIdentifier, window: nil, windowNumber: number,
                                     editor: nil, button: nil, row: nil, panel: nil, evidence: [])
         }
@@ -1031,31 +1093,118 @@ extension CodexHost {
 /// The main thread receives plain geometry and identifiers from display polls.
 final class HostAccess: @unchecked Sendable {
     private let queue = DispatchQueue(label: "local.composerbubbles.mac.host", qos: .userInitiated)
-    private let host = CodexHost()
+    private var sessions: [ShelfWindowID: CodexHost] = [:]
+    private var latestKeys = Set<String>()
 
-    func read<T>(_ action: (CodexHost) throws -> T) rethrows -> T {
-        try queue.sync { try action(host) }
+    private func targets() -> [WindowTarget] {
+        guard let front = NSWorkspace.shared.frontmostApplication,
+              front.bundleIdentifier == "com.openai.codex", !front.isHidden else { return [] }
+        let pid = front.processIdentifier
+        guard let rows = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] else { return [] }
+        let live = Set(rows.compactMap { row -> ShelfWindowID? in
+            guard row[kCGWindowOwnerPID as String] as? pid_t == pid else { return nil }
+            return row[kCGWindowNumber as String] as? ShelfWindowID
+        })
+        sessions = sessions.filter { live.contains($0.key) && $0.value.target.pid == pid }
+        let windows = CodexWindowGeometry.inventory(rows, pid: pid)
+        guard !windows.isEmpty else { return [] }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.15)
+        let trusted = AXIsProcessTrusted()
+        let focus = trusted ? element(app, "AXFocusedWindow") : nil
+        var all = trusted ? attribute(app, "AXWindows") as? [AXUIElement] ?? [] : []
+        if let focus, !all.contains(where: { CFEqual(focus, $0) }) { all.append(focus) }
+        let handles = all.compactMap { win -> (window: AXUIElement, frame: CGRect)? in
+            guard attribute(win, "AXMinimized") as? Bool != true, let rect = frame(win) else { return nil }
+            return (win, rect)
+        }
+        let focused = focus.flatMap { w in handles.firstIndex { CFEqual(w, $0.window) } }
+        let previous = sessions.compactMapValues { session in
+            session.knownWindow.flatMap { old in handles.firstIndex { CFEqual(old, $0.window) } }
+        }
+        let pairs = CodexWindowGeometry.match(windows, axFrames: handles.map(\.frame), focused: focused, previous: previous)
+        return windows.compactMap { row in
+            guard row.exposed else { return nil }
+            let index = pairs[row.id]
+            let window = index.map { handles[$0].window }
+            if let window, let subrole = attribute(window, "AXSubrole") as? String,
+               subrole != "AXStandardWindow" && subrole != "AXUnknown" { return nil }
+            return WindowTarget(id: row.id, pid: pid, app: app, window: window, frame: row.frame,
+                                focused: trusted ? (index != nil && index == focused) : row.id == windows.first?.id,
+                                occludingQuartzFrames: row.occludingQuartzFrames)
+        }
     }
 
-    func perform<T: Sendable>(_ action: @Sendable @escaping (CodexHost) -> T,
-                              completion: @MainActor @Sendable @escaping (T) -> Void) {
+    private func session(for target: WindowTarget) -> CodexHost {
+        let session: CodexHost
+        if let existing = sessions[target.id], existing.matches(target) {
+            session = existing
+            session.target = target
+        } else {
+            session = CodexHost(target: target)
+            sessions[target.id] = session
+        }
+        session.savedChatKeys = latestKeys
+        return session
+    }
+
+    private func session(for id: ShelfWindowID, activate: Bool) -> CodexHost? {
+        guard let target = targets().first(where: { $0.id == id }) else { return nil }
+        let scoped = session(for: target)
+        return !activate || scoped.focusTarget() ? scoped : nil
+    }
+
+    func focusedWindowID() -> ShelfWindowID? {
+        queue.sync { targets().first(where: \.focused)?.id }
+    }
+
+    func read<T>(in id: ShelfWindowID, activate: Bool = false, _ action: (CodexHost) throws -> T) rethrows -> T? {
+        try queue.sync { try session(for: id, activate: activate).map(action) }
+    }
+
+    func perform<T: Sendable>(in id: ShelfWindowID, activate: Bool = false,
+                              _ action: @Sendable @escaping (CodexHost) -> T,
+                              completion: @MainActor @Sendable @escaping (T?) -> Void) {
         queue.async { [self] in
-            let result = action(host)
+            let result = session(for: id, activate: activate).map(action)
             DispatchQueue.main.async { completion(result) }
         }
     }
 
-    func clearDraft(_ text: String, in surface: CodexSurface, completion: @MainActor @Sendable @escaping (Bool) -> Void) {
-        perform({ $0.clearIfUnchanged(text, in: surface) }, completion: completion)
+    func observeWindows(savedKeys: Set<String>,
+                        completion: @MainActor @Sendable @escaping ([WindowShelfObservation]) -> Void) {
+        queue.async { [self] in
+            latestKeys = savedKeys
+            observeNext(targets()[...], results: [], completion: completion)
+        }
     }
 
-    func reset() { queue.async { [self] in host.clearReturnObservation() } }
+    /// Yield the host queue after each window so explicit saves, drags and previews
+    /// don't have to wait behind every background window's Accessibility traversal.
+    private func observeNext(_ pending: ArraySlice<WindowTarget>, results: [WindowShelfObservation],
+                             completion: @MainActor @Sendable @escaping ([WindowShelfObservation]) -> Void) {
+        guard let target = pending.first else {
+            DispatchQueue.main.async { completion(results) }
+            return
+        }
+        queue.async { [self] in
+            var updated = results
+            let observation = session(for: target).shelfObservation()
+            updated.append(WindowShelfObservation(id: target.id, focused: target.focused, observation: observation,
+                                                   occludingQuartzFrames: target.occludingQuartzFrames))
+            observeNext(pending.dropFirst(), results: updated, completion: completion)
+        }
+    }
 
-    func observe(savedKeys: Set<String>, completion: @MainActor @Sendable @escaping (ShelfObservation?) -> Void) {
-        perform({ host in
-            host.savedChatKeys = savedKeys
-            return host.shelfObservation()
-        }, completion: completion)
+    func clearDraft(_ text: String, in surface: CodexSurface, completion: @MainActor @Sendable @escaping (Bool) -> Void) {
+        perform(in: surface.windowID, { $0.clearIfUnchanged(text, in: surface) }) { completion($0 == true) }
+    }
+
+    func reset() {
+        queue.async { [self] in
+            for session in sessions.values { session.clearReturnObservation() }
+        }
     }
 }
 

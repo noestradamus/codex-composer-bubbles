@@ -696,7 +696,7 @@ final class BubblePanelController {
     var verifyPreview: ((UUID, @escaping @MainActor (Bool) -> Void) -> Void)?
     var onCancelLink: (() -> Void)?
     var onDropText: ((String) -> Bool)?
-    var onPlacementsChanged: ((ShelfPlacements) -> Void)?
+    var frame: CGRect? { panel.isVisible ? panel.frame : nil }
 
     private let panel = FloatingBubblePanel(label: "Composer Bubbles", identifier: "composer-bubbles.panel")
     private let card = FloatingBubblePanel(label: "Saved suggestion", identifier: "composer-bubbles.preview")
@@ -724,30 +724,21 @@ final class BubblePanelController {
     private var anchor = NSRect.zero
     private var screen = NSRect.zero
     private var placement: ShelfPlacement?
-    private var placements = ShelfPlacements()
-    private var hostDisplayID: String?
+    private let windowID: CGWindowID
+    private let placements: WindowShelfPlacements
+    private var hostDisplay: ShelfDisplay?
+    private var hostFrame = CGRect.zero
+    private var layoutRoom: CGRect?
     private var display: ShelfDisplay?
     private var lastLayout: ShelfLayout?
     private var dragStart: NSPoint?
     private var didMove = false
     private var layoutDirty = true
 
-    func restorePlacements(_ saved: ShelfPlacements) {
-        placements = saved
-        placement = nil
-        hostDisplayID = nil
-        dragStart = nil
-        didMove = false
-        lastLayout = nil
-        layoutDirty = true
-    }
-
     func resetPlacement() {
-        let screens = ShelfDisplay.connected()
-        guard let host = hostDisplayID ?? screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })?.id else { return }
-        placements.reset(for: host)
+        guard let hostDisplay else { return }
+        placements.reset(windowID, on: hostDisplay)
         placement = nil
-        onPlacementsChanged?(placements)
     }
 
     func setSaveStyle(_ next: SaveButtonStyle) {
@@ -820,7 +811,9 @@ final class BubblePanelController {
         save.setAccessibilityHelp(help)
     }
 
-    init() {
+    init(windowID: CGWindowID = 0, placements: WindowShelfPlacements = WindowShelfPlacements()) {
+        self.windowID = windowID
+        self.placements = placements
         panel.contentView = root
         root.onDropText = { [weak self] text in self?.onDropText?(text) ?? false }
         root.addSubview(save)
@@ -851,20 +844,20 @@ final class BubblePanelController {
                                        horizontal: previous.horizontal, widthLimit: previous.widthLimit,
                                        laneWidth: previous.laneWidth)
             didMove = true
+            layoutRoom = nil
             layout(on: next)
         }
         move.onMoveEnded = { [weak self] in
             guard let self else { return }
             dragStart = nil
-            guard didMove, let hostDisplayID, let display, let previous = placement else { return }
+            guard didMove, let hostDisplay, let display, let previous = placement else { return }
             didMove = false
             let grip = NSPoint(x: panel.frame.minX + move.frame.minX, y: panel.frame.minY + move.frame.maxY)
             let pinned = ShelfPlacement(displayID: display.id, grip: grip, displayFrame: display.frame,
                                         horizontal: previous.horizontal, widthLimit: previous.widthLimit,
                                         laneWidth: previous.laneWidth)
             placement = pinned
-            placements.pin(pinned, for: hostDisplayID)
-            onPlacementsChanged?(placements)
+            placements.pin(pinned, id: windowID, window: hostFrame, host: hostDisplay)
         }
         scroll.borderType = .noBorder
         scroll.scrollerStyle = .overlay
@@ -924,7 +917,8 @@ final class BubblePanelController {
         previewSurface.addSubview(close)
     }
 
-    func show(bubbles incoming: [SavedBubble], anchor: NSRect, screen: NSRect, realAnchor: Bool = true) {
+    func show(bubbles incoming: [SavedBubble], anchor: NSRect, screen: NSRect, realAnchor: Bool = true,
+              hostFrame: CGRect? = nil, avoiding occupied: [CGRect] = [], occludedBy windows: [CGRect] = []) {
         guard screen.width > 0 && screen.height > 0 else { hide(); return }
         self.anchor = anchor
         if incoming != incomingBubbles {
@@ -942,11 +936,15 @@ final class BubblePanelController {
         guard dragStart == nil else { return }
         let screens = ShelfDisplay.connected()
         guard let host = ShelfDisplay.containing(screen, in: screens) else { hide(); return }
-        let result = placements.resolve(host: host, connected: screens, anchor: anchor, count: bubbles.count,
-                                        realAnchor: realAnchor)
-        hostDisplayID = host.id
+        hostDisplay = host
+        self.hostFrame = hostFrame ?? host.frame
+        let result = placements.resolve(id: windowID, window: self.hostFrame, host: host, connected: screens,
+                                        anchor: anchor, count: bubbles.count, realAnchor: realAnchor)
         placement = result.placement
-        if result.didSave { onPlacementsChanged?(placements) }
+        layoutRoom = result.placement.visibleRoom(on: result.display, host: host, window: self.hostFrame,
+                                                  count: bubbles.count, saveWidth: saveWidth,
+                                                  avoiding: occupied, occludedBy: windows)
+        guard layoutRoom != nil else { hide(); return }
         layout(on: result.display)
         if !panel.isVisible { panel.orderFrontRegardless() }
     }
@@ -955,6 +953,17 @@ final class BubblePanelController {
         guard dragStart == nil else { return }
         closePreview()
         if panel.isVisible { panel.orderOut(nil) }
+    }
+
+    func retire() {
+        dragStart = nil
+        didMove = false
+        hide()
+        linkedWindow?.close()
+        linkedWindow = nil
+        card.close()
+        panel.close()
+        placements.release(windowID)
     }
 
     private func rebuildPills() {
@@ -981,11 +990,14 @@ final class BubblePanelController {
                       width: frame.width, height: frame.height).integral
     }
 
+    private var saveWidth: CGFloat {
+        bubbles.isEmpty ? SaveButtonDrawing.size(for: save.saveStyle, bubbleStyle: style).width : SaveButtonDrawing.reservedWidth
+    }
+
     private func layout(on display: ShelfDisplay) {
         guard let placement else { return }
-        let saveWidth = bubbles.isEmpty ? SaveButtonDrawing.size(for: save.saveStyle, bubbleStyle: style).width
-                                        : SaveButtonDrawing.reservedWidth
-        let geometry = placement.layout(displayFrame: display.frame, visibleFrame: display.visibleFrame,
+        let room = layoutRoom ?? placement.layoutDisplay(display, host: hostDisplay, window: hostFrame).visibleFrame
+        let geometry = placement.layout(displayFrame: display.frame, visibleFrame: room,
                                         count: bubbles.count, emptySaveWidth: saveWidth)
         let displayChanged = self.display != display
         self.display = display
