@@ -37,17 +37,16 @@ private final class SaveShortcut {
     }
 }
 
-private func visibleHostWindow(of application: NSRunningApplication) -> CGRect? {
+private func visibleHostQuartzWindow(of application: NSRunningApplication) -> CGRect? {
     let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
-    guard let rows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]],
-          let primary = NSScreen.screens.first else { return nil }
+    guard let rows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else { return nil }
     for row in rows {
         guard row[kCGWindowOwnerPID as String] as? Int32 == application.processIdentifier,
               row[kCGWindowLayer as String] as? Int == 0,
               let bounds = row[kCGWindowBounds as String] as? NSDictionary,
               let box = CGRect(dictionaryRepresentation: bounds),
               box.width > 250, box.height > 160 else { continue }
-        return CGRect(x: box.minX, y: primary.frame.maxY - box.maxY, width: box.width, height: box.height)
+        return box
     }
     return nil
 }
@@ -74,7 +73,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         onChange: { [weak self] style in self?.panel.setStyle(style) },
         onSaveStyleChange: { [weak self] style in self?.panel.setSaveStyle(style) }
     )
-    private let placementKey = "shelfPlacementV2"
     private var isHidden: Bool { defaults.bool(forKey: "hideShelf") }
     private var pendingRemoval: SavedBubble?
     private enum LinkAction {
@@ -108,19 +106,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         status.menu = menu
-        let savedPlacement = defaults.data(forKey: placementKey).flatMap {
-            try? JSONDecoder().decode(ShelfPlacement.self, from: $0)
-        }
-        let hasLegacyOffset = defaults.object(forKey: "shelfX") != nil || defaults.object(forKey: "shelfY") != nil
-        let legacyOffset = hasLegacyOffset
-            ? NSPoint(x: defaults.double(forKey: "shelfX"), y: defaults.double(forKey: "shelfY")) : nil
-        panel.onPlacementChanged = { [weak self] placement in
-            guard let self, let data = try? JSONEncoder().encode(placement) else { return }
-            defaults.set(data, forKey: placementKey)
-            defaults.removeObject(forKey: "shelfX")
-            defaults.removeObject(forKey: "shelfY")
-        }
-        panel.restorePlacement(savedPlacement, legacyOffset: legacyOffset)
+        panel.restorePlacements(ShelfPlacements(defaults: defaults))
+        panel.onPlacementsChanged = { [defaults] in $0.save(to: defaults) }
         panel.setStyle(.load(from: defaults))
         panel.setSaveStyle(.load(from: defaults))
         panel.onSettings = { [weak self] in self?.openSettings() }
@@ -219,7 +206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         host.observe(savedKeys: keys) { [weak self] observation in
             guard let self else { return }
             refreshPending = false
-            guard generation == refreshGeneration, !isHidden,
+            guard let observation, generation == refreshGeneration, !isHidden,
                   let active = NSWorkspace.shared.frontmostApplication,
                   active.bundleIdentifier == hostBundleID, active.processIdentifier == pid,
                   !active.isHidden else {
@@ -234,26 +221,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let chat = canonicalBubbleChat(observation.chatKey)
         displayedChat = chat
         let visible = store.visible(in: chat)
-        if let geometry = observation.placement {
-            reportHealth(observation, editor: true, chat: chat, visibleCount: visible.count)
-            panel.setChatIdentified(chat != nil)
-            panel.show(bubbles: visible, anchor: geometry.anchor, screen: geometry.screen)
-            return
-        }
-        // Window geometry is enough for manual placement. No screenshot or title is collected.
-        guard !front.isHidden, let window = visibleHostWindow(of: front) ?? NSScreen.main?.visibleFrame,
-              let display = NSScreen.screens.max(by: {
-                  $0.frame.intersection(window).area < $1.frame.intersection(window).area
-              }) else {
+        let screens = NSScreen.screens.map { (frame: $0.frame, visibleFrame: $0.visibleFrame) }
+        guard let geometry = observation.placement(on: screens, fallbackQuartzWindow: visibleHostQuartzWindow(of: front),
+                                                   fallbackScreen: NSScreen.main?.visibleFrame) else {
             panel.hide()
             return
         }
-        let railWidth: CGFloat = min(580, window.width * 0.58)
-        let trailing: CGFloat = min(window.maxX - 55, window.midX + railWidth * 0.54)
-        let estimate = NSRect(x: trailing - railWidth, y: window.minY + 26, width: railWidth, height: 66)
-        reportHealth(observation, editor: false, chat: chat, visibleCount: visible.count)
+        reportHealth(observation, editor: geometry.realAnchor, chat: chat, visibleCount: visible.count)
         panel.setChatIdentified(chat != nil, accessibilityEnabled: observation.trusted)
-        panel.show(bubbles: visible, anchor: estimate, screen: display.visibleFrame, realAnchor: false)
+        panel.show(bubbles: visible, anchor: geometry.anchor, screen: geometry.screen, realAnchor: geometry.realAnchor)
     }
 
     // AX references in these immutable results go straight back to the host queue.
@@ -513,9 +489,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func resetPosition() {
-        defaults.removeObject(forKey: placementKey)
-        defaults.removeObject(forKey: "shelfX")
-        defaults.removeObject(forKey: "shelfY")
         panel.resetPlacement()
         refresh()
     }
@@ -579,8 +552,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.informativeText = message
         alert.runModal()
     }
-}
-
-private extension CGRect {
-    var area: CGFloat { isNull || isEmpty ? 0 : width * height }
 }

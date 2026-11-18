@@ -1,7 +1,7 @@
 import AppKit
 import ApplicationServices
 
-/// Positions are in AppKit's global screen coordinate system.
+/// Positions returned by Accessibility are in global Quartz coordinates.
 // Only immutable AX handles cross a queue boundary. Reads and edits on those
 // handles are confined to HostAccess.
 struct CodexSurface: @unchecked Sendable {
@@ -121,6 +121,7 @@ struct CodexAliasIndex {
 /// Reads the host's accessibility controls and resolves visible client IDs. The pasteboard and key events
 /// are deliberately not part of the automatic capture path.
 final class CodexHost {
+    private typealias FocusedWindow = (pid: pid_t, app: AXUIElement, window: AXUIElement)
     private let chatTitle = CodexChatTitle()
     private let selectedTab = CodexSelectedChatTab()
     private let hostID = "com.openai.codex"
@@ -158,6 +159,7 @@ final class CodexHost {
         confirmedShelf = nil
         departure = nil
         last = nil
+        lastDiscovery = .distantPast
     }
     private(set) var primaryScopeToken: String?
     private(set) var isForeignContext = false
@@ -169,51 +171,60 @@ final class CodexHost {
     func current() -> CodexSurface? { current(freshScan: true) }
 
     private func current(freshScan: Bool) -> CodexSurface? {
-        observe(freshScan: freshScan, forShelf: false).surface
+        observe(focusedHostWindow(), freshScan: freshScan, forShelf: false).surface
     }
 
-    func currentChatKey() -> String? { observe(freshScan: true, forShelf: false).key }
+    func currentChatKey() -> String? { observe(focusedHostWindow(), freshScan: true, forShelf: false).key }
 
-    /// A display poll observes the window once. Capture and drag perform a
-    /// separate fresh check and can never use display-only continuity.
-    func shelfObservation() -> (surface: CodexSurface?, key: String?) {
-        observe(freshScan: false, forShelf: true)
+    /// Window geometry and chat identity must belong to the same focus snapshot.
+    func shelfObservation() -> ShelfObservation? {
+        let focus = focusedHostWindow()
+        let reading = observe(focus, freshScan: false, forShelf: true)
+        if let focus, let currentWindow = element(focus.app, "AXFocusedWindow"),
+           !CFEqual(focus.window, currentWindow) {
+            clearReturnObservation()
+            return nil
+        }
+        return ShelfObservation(quartzFrame: reading.surface?.quartzFrame, windowQuartzFrame: reading.windowFrame,
+                                chatKey: reading.key, source: identitySource, trusted: AXIsProcessTrusted())
     }
 
-    private func observe(freshScan: Bool, forShelf: Bool) -> (surface: CodexSurface?, key: String?) {
+    private func observe(_ focus: FocusedWindow?, freshScan: Bool, forShelf: Bool)
+        -> (surface: CodexSurface?, key: String?, windowFrame: CGRect?) {
         identitySource = "unavailable"
         selectedRow = nil
         observedKeys = []
         primaryScopeToken = nil
         isForeignContext = false
-        guard let (pid, app, window) = focusedHostWindow() else {
+        guard let (pid, app, window) = focus else {
             clearReturnObservation()
-            return (nil, nil)
+            return (nil, nil, nil)
         }
-        if let old = confirmedShelf, !CFEqual(old.window, window) { clearReturnObservation() }
+        if let previousWindow = confirmedShelf?.window ?? last?.window,
+           !CFEqual(previousWindow, window) { clearReturnObservation() }
         let windowFrame = frame(window)
         var editor = element(app, "AXFocusedUIElement").flatMap(composerAncestor)
+        if let candidate = editor, !belongs(candidate, to: window) { editor = nil }
         if editor == nil, let prior = last, prior.process == pid, CFEqual(prior.window, window),
            let windowFrame, let bounds = frame(prior.editor), bounds.intersects(windowFrame),
-           let owner = element(prior.editor, "AXWindow"), CFEqual(owner, window),
+           belongs(prior.editor, to: window),
            isVisibleComposer(prior.editor, in: app, bounds: bounds) {
             editor = prior.editor
         }
         if editor == nil, let windowFrame,
            freshScan || confirmedShelf != nil || Date().timeIntervalSince(lastDiscovery) >= 1.2 {
             lastDiscovery = Date()
-            editor = findVisibleComposer(in: app, windowFrame: windowFrame)
+            editor = findVisibleComposer(in: app, window: window, windowFrame: windowFrame)
         }
-        if let candidate = editor, element(candidate, "AXWindow").map({ CFEqual($0, window) }) != true { editor = nil }
         let key = currentChatKey(in: window, editor: editor, freshScan: freshScan, forShelf: forShelf)
         // A hit-test miss can simply mean the shelf or a popup covers the
         // editor. Keep its handle for rediscovery; every reuse hit-tests anew.
         guard let editor, let rawFrame = frame(editor), let windowFrame, rawFrame.intersects(windowFrame)
-        else { return (nil, key) }
+        else { return (nil, key, windowFrame) }
         let surface = CodexSurface(quartzFrame: rawFrame, chatKey: key ?? "unresolved",
                                    editor: editor, window: window, process: pid)
         last = surface
-        return (surface, key)
+        return (surface, key, windowFrame)
     }
 
     func capture(in surface: CodexSurface) throws -> String {
@@ -278,7 +289,12 @@ final class CodexHost {
         return nil
     }
 
-    private func findVisibleComposer(in app: AXUIElement, windowFrame: CGRect) -> AXUIElement? {
+    private func belongs(_ item: AXUIElement, to window: AXUIElement) -> Bool {
+        guard let owner = element(item, "AXWindow") else { return false }
+        return CFEqual(owner, window)
+    }
+
+    private func findVisibleComposer(in app: AXUIElement, window: AXUIElement, windowFrame: CGRect) -> AXUIElement? {
         let samples: [(CGFloat, CGFloat)] = [(0.64, 103), (0.48, 103), (0.72, 72),
                                               (0.57, 146), (0.36, 86), (0.61, 188)]
         for (fraction, distance) in samples {
@@ -286,7 +302,7 @@ final class CodexHost {
             let y = Float(windowFrame.maxY - distance)
             var hit: AXUIElement?
             if AXUIElementCopyElementAtPosition(app, x, y, &hit) == .success,
-               let hit, let composer = composerAncestor(of: hit) { return composer }
+               let hit, let composer = composerAncestor(of: hit), belongs(composer, to: window) { return composer }
         }
         return nil
     }
@@ -322,7 +338,7 @@ final class CodexHost {
         return classes.contains("ProseMirror") && labels.contains { $0.contains("codex") }
     }
 
-    private func focusedHostWindow() -> (pid_t, AXUIElement, AXUIElement)? {
+    private func focusedHostWindow() -> FocusedWindow? {
         guard AXIsProcessTrusted(), let front = NSWorkspace.shared.frontmostApplication,
               front.bundleIdentifier == hostID else { return nil }
         let app = AXUIElementCreateApplication(front.processIdentifier)
@@ -1035,32 +1051,37 @@ final class HostAccess: @unchecked Sendable {
 
     func reset() { queue.async { [self] in host.clearReturnObservation() } }
 
-    func observe(savedKeys: Set<String>, completion: @MainActor @Sendable @escaping (ShelfObservation) -> Void) {
+    func observe(savedKeys: Set<String>, completion: @MainActor @Sendable @escaping (ShelfObservation?) -> Void) {
         perform({ host in
             host.savedChatKeys = savedKeys
-            let observation = host.shelfObservation()
-            return ShelfObservation(quartzFrame: observation.surface?.quartzFrame, chatKey: observation.key,
-                                    source: host.identitySource, trusted: AXIsProcessTrusted())
+            return host.shelfObservation()
         }, completion: completion)
     }
 }
 
 struct ShelfObservation: Sendable {
     let quartzFrame: CGRect?
+    let windowQuartzFrame: CGRect?
     let chatKey: String?
     let source: String
     let trusted: Bool
-    @MainActor var placement: (anchor: NSRect, screen: NSRect)? {
-        guard let quartzFrame else { return nil }
-        let screens = NSScreen.screens
+
+    func placement(on screens: [(frame: CGRect, visibleFrame: CGRect)],
+                   fallbackQuartzWindow: @autoclosure () -> CGRect?, fallbackScreen: @autoclosure () -> CGRect?)
+        -> (anchor: NSRect, screen: NSRect, realAnchor: Bool)? {
         guard let primary = screens.first else { return nil }
-        let anchor = NSRect(x: quartzFrame.minX, y: primary.frame.maxY - quartzFrame.maxY,
-                            width: quartzFrame.width, height: quartzFrame.height)
-        func overlap(_ display: NSScreen) -> CGFloat {
-            let rect = display.frame.intersection(anchor)
+        let raw = quartzFrame ?? windowQuartzFrame ?? fallbackQuartzWindow()
+        guard let reference = raw.map({ CGRect(x: $0.minX, y: primary.frame.maxY - $0.maxY,
+                                               width: $0.width, height: $0.height) }) ?? fallbackScreen() else { return nil }
+        func overlap(_ screen: CGRect) -> CGFloat {
+            let rect = screen.intersection(reference)
             return rect.isEmpty || rect.isNull ? 0 : rect.width * rect.height
         }
-        let display = screens.max { overlap($0) < overlap($1) } ?? primary
-        return (anchor, display.visibleFrame)
+        let display = screens.max { overlap($0.frame) < overlap($1.frame) } ?? primary
+        if quartzFrame != nil { return (reference, display.visibleFrame, true) }
+        let railWidth = min(580, reference.width * 0.58)
+        let trailing = min(reference.maxX - 55, reference.midX + railWidth * 0.54)
+        let estimate = CGRect(x: trailing - railWidth, y: reference.minY + 26, width: railWidth, height: 66)
+        return (estimate, display.visibleFrame, false)
     }
 }

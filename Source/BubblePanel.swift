@@ -696,7 +696,7 @@ final class BubblePanelController {
     var verifyPreview: ((UUID, @escaping @MainActor (Bool) -> Void) -> Void)?
     var onCancelLink: (() -> Void)?
     var onDropText: ((String) -> Bool)?
-    var onPlacementChanged: ((ShelfPlacement) -> Void)?
+    var onPlacementsChanged: ((ShelfPlacements) -> Void)?
 
     private let panel = FloatingBubblePanel(label: "Composer Bubbles", identifier: "composer-bubbles.panel")
     private let card = FloatingBubblePanel(label: "Saved suggestion", identifier: "composer-bubbles.preview")
@@ -724,23 +724,31 @@ final class BubblePanelController {
     private var anchor = NSRect.zero
     private var screen = NSRect.zero
     private var placement: ShelfPlacement?
-    private var legacyOffset: NSPoint?
+    private var placements = ShelfPlacements()
+    private var hostDisplayID: String?
     private var display: ShelfDisplay?
     private var lastLayout: ShelfLayout?
     private var dragStart: NSPoint?
     private var didMove = false
     private var layoutDirty = true
 
-    func restorePlacement(_ saved: ShelfPlacement?, legacyOffset: NSPoint? = nil) {
-        placement = saved?.isValid == true ? saved : nil
-        self.legacyOffset = placement == nil ? legacyOffset : nil
+    func restorePlacements(_ saved: ShelfPlacements) {
+        placements = saved
+        placement = nil
+        hostDisplayID = nil
         dragStart = nil
         didMove = false
         lastLayout = nil
         layoutDirty = true
     }
 
-    func resetPlacement() { restorePlacement(nil) }
+    func resetPlacement() {
+        let screens = ShelfDisplay.connected()
+        guard let host = hostDisplayID ?? screens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })?.id else { return }
+        placements.reset(for: host)
+        placement = nil
+        onPlacementsChanged?(placements)
+    }
 
     func setSaveStyle(_ next: SaveButtonStyle) {
         guard save.saveStyle != next else { return }
@@ -843,20 +851,20 @@ final class BubblePanelController {
                                        horizontal: previous.horizontal, widthLimit: previous.widthLimit,
                                        laneWidth: previous.laneWidth)
             didMove = true
-            legacyOffset = nil
             layout(on: next)
         }
         move.onMoveEnded = { [weak self] in
             guard let self else { return }
             dragStart = nil
-            guard didMove, let display, let previous = placement else { return }
+            guard didMove, let hostDisplayID, let display, let previous = placement else { return }
             didMove = false
             let grip = NSPoint(x: panel.frame.minX + move.frame.minX, y: panel.frame.minY + move.frame.maxY)
             let pinned = ShelfPlacement(displayID: display.id, grip: grip, displayFrame: display.frame,
                                         horizontal: previous.horizontal, widthLimit: previous.widthLimit,
                                         laneWidth: previous.laneWidth)
             placement = pinned
-            onPlacementChanged?(pinned)
+            placements.pin(pinned, for: hostDisplayID)
+            onPlacementsChanged?(placements)
         }
         scroll.borderType = .noBorder
         scroll.scrollerStyle = .overlay
@@ -933,22 +941,13 @@ final class BubblePanelController {
         }
         guard dragStart == nil else { return }
         let screens = ShelfDisplay.connected()
-        guard let primary = screens.first else { hide(); return }
-        if placement == nil || (realAnchor && legacyOffset != nil) {
-            let host = screens.first(where: { $0.visibleFrame == screen }) ?? screens.max {
-                let a = $0.frame.intersection(screen), b = $1.frame.intersection(screen)
-                return a.width * a.height < b.width * b.height
-            } ?? primary
-            let initial = ShelfPlacement.initial(anchor: anchor, visibleFrame: host.visibleFrame,
-                displayFrame: host.frame, displayID: host.id, count: bubbles.count,
-                legacyOffset: realAnchor ? legacyOffset : nil)
-            placement = initial
-            if realAnchor || legacyOffset == nil {
-                legacyOffset = nil
-                onPlacementChanged?(initial)
-            }
-        }
-        layout(on: screens.first(where: { $0.id == placement?.displayID }) ?? primary)
+        guard let host = ShelfDisplay.containing(screen, in: screens) else { hide(); return }
+        let result = placements.resolve(host: host, connected: screens, anchor: anchor, count: bubbles.count,
+                                        realAnchor: realAnchor)
+        hostDisplayID = host.id
+        placement = result.placement
+        if result.didSave { onPlacementsChanged?(placements) }
+        layout(on: result.display)
         if !panel.isVisible { panel.orderFrontRegardless() }
     }
 

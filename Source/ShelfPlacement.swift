@@ -9,6 +9,79 @@ struct ShelfDisplay: Equatable {
         NSScreen.screens.map { ShelfDisplay(id: ShelfPlacement.identifier(for: $0), frame: $0.frame,
                                              visibleFrame: $0.visibleFrame) }
     }
+
+    static func containing(_ visibleFrame: NSRect, in displays: [ShelfDisplay]) -> ShelfDisplay? {
+        if let match = displays.first(where: { $0.visibleFrame == visibleFrame }) { return match }
+        func area(_ display: ShelfDisplay) -> CGFloat {
+            let overlap = display.frame.intersection(visibleFrame)
+            return overlap.isEmpty ? 0 : overlap.width * overlap.height
+        }
+        return displays.max { area($0) < area($1) }
+    }
+}
+
+/// Each Codex display owns its position, even if the user drags its tab to another display.
+struct ShelfPlacements {
+    private static let key = "shelfPlacementsByDisplayV3"
+    private(set) var saved: [String: ShelfPlacement]
+    private var estimates: [String: ShelfPlacement] = [:]
+    private var legacyOffset: NSPoint?
+
+    init(saved: [String: ShelfPlacement]? = nil, legacy: ShelfPlacement? = nil, legacyOffset: NSPoint? = nil) {
+        if let saved {
+            self.saved = saved.filter { !$0.key.isEmpty && $0.value.isValid }
+        } else if let legacy, legacy.isValid {
+            self.saved = [legacy.displayID: legacy]
+        } else {
+            self.saved = [:]
+            self.legacyOffset = legacyOffset
+        }
+    }
+
+    init(defaults: UserDefaults) {
+        let decoder = JSONDecoder()
+        let saved = defaults.data(forKey: Self.key).flatMap { try? decoder.decode([String: ShelfPlacement].self, from: $0) }
+        let legacy = defaults.data(forKey: "shelfPlacementV2").flatMap { try? decoder.decode(ShelfPlacement.self, from: $0) }
+        let hasOffset = defaults.object(forKey: "shelfX") != nil || defaults.object(forKey: "shelfY") != nil
+        let offset = hasOffset ? NSPoint(x: defaults.double(forKey: "shelfX"), y: defaults.double(forKey: "shelfY")) : nil
+        self.init(saved: saved, legacy: legacy, legacyOffset: offset)
+        if saved == nil && legacy?.isValid == true { save(to: defaults) }
+    }
+
+    func save(to defaults: UserDefaults) {
+        guard let data = try? JSONEncoder().encode(saved) else { return }
+        defaults.set(data, forKey: Self.key)
+        for key in ["shelfPlacementV2", "shelfX", "shelfY"] { defaults.removeObject(forKey: key) }
+    }
+
+    mutating func resolve(host: ShelfDisplay, connected: [ShelfDisplay], anchor: NSRect, count: Int, realAnchor: Bool)
+        -> (placement: ShelfPlacement, display: ShelfDisplay, didSave: Bool) {
+        if let placement = saved[host.id] {
+            let destination = connected.first { $0.id == placement.displayID } ?? host
+            return (placement, destination, false)
+        }
+        if !realAnchor, let estimate = estimates[host.id] { return (estimate, host, false) }
+        let initial = ShelfPlacement.initial(anchor: anchor, visibleFrame: host.visibleFrame, displayFrame: host.frame,
+            displayID: host.id, count: count, legacyOffset: realAnchor ? legacyOffset : nil)
+        if realAnchor {
+            pin(initial, for: host.id)
+        } else {
+            estimates[host.id] = initial
+        }
+        return (initial, host, realAnchor)
+    }
+
+    mutating func pin(_ placement: ShelfPlacement, for hostID: String) {
+        saved[hostID] = placement
+        estimates.removeValue(forKey: hostID)
+        legacyOffset = nil
+    }
+
+    mutating func reset(for hostID: String) {
+        saved.removeValue(forKey: hostID)
+        estimates.removeValue(forKey: hostID)
+        legacyOffset = nil
+    }
 }
 
 struct ShelfLayout: Equatable {
