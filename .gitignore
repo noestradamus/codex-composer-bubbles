@@ -5,6 +5,8 @@
 .build/
 dist/
 .composer-bubbles-build.*/
+/Windows/**/bin/
+/Windows/**/obj/
 
 # Local signing material and saved suggestions
 *.key

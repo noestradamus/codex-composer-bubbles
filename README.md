@@ -4,6 +4,8 @@ Save a Codex composer prediction for later, right beside the composer. Each chat
 
 Composer Bubbles is an independent macOS companion for the Codex desktop app.
 
+The Windows port is in development. See the [Windows preview and build guide](Windows/README.md).
+
 ## Install on your Mac
 
 Download the **universal DMG** from [GitHub Releases](https://github.com/noestradamus/codex-composer-bubbles/releases). The companion runs on macOS 13 or later and requires a compatible Codex desktop app.

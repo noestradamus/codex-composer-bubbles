@@ -1,0 +1,94 @@
+<Window x:Class="ComposerBubbles.ShelfWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Composer Bubbles" Icon="AppIcon.png"
+        Width="450" MinWidth="360" SizeToContent="Height" ResizeMode="CanMinimize"
+        Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
+        Foreground="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}"
+        FontFamily="Segoe UI" FontSize="14" Topmost="True"
+        Deactivated="WindowDeactivated" Activated="WindowActivated" PreviewKeyDown="WindowKeyDown">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Padding" Value="12,6"/>
+            <Setter Property="MinHeight" Value="32"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Padding" Value="7,5"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource {x:Static SystemColors.ControlDarkBrushKey}}"/>
+        </Style>
+        <Style x:Key="BubbleButton" TargetType="Button">
+            <Setter Property="Padding" Value="12,6"/>
+            <Setter Property="Margin" Value="0,0,6,0"/>
+            <Setter Property="MaxWidth" Value="214"/>
+            <Setter Property="MinHeight" Value="34"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Face" CornerRadius="9"
+                                BorderThickness="1" BorderBrush="{DynamicResource {x:Static SystemColors.ControlDarkBrushKey}}"
+                                Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Center" RecognizesAccessKey="False"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Face" Property="BorderBrush" Value="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}"/>
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="Face" Property="BorderBrush" Value="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    <StackPanel Margin="17">
+        <StackPanel x:Name="LinkArea" Margin="0,0,0,15">
+            <TextBlock FontWeight="SemiBold" Text="Codex chat link" Margin="0,0,0,5"/>
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Content="Open shelf" Click="OpenShelf"
+                        Margin="8,0,0,0" AutomationProperties.AutomationId="OpenShelf"/>
+                <TextBox x:Name="ChatLink" VerticalContentAlignment="Center" KeyDown="LinkKeyDown"
+                         AutomationProperties.Name="Codex chat link" AutomationProperties.AutomationId="ChatLink"/>
+            </DockPanel>
+        </StackPanel>
+        <StackPanel x:Name="ShelfArea" Margin="0,0,0,14" Visibility="Collapsed">
+            <DockPanel Margin="0,0,0,7">
+                <Button DockPanel.Dock="Right" Content="Change chat" Click="ChangeChat" Margin="6,0,0,0"/>
+                <TextBlock x:Name="ChatLabel" VerticalAlignment="Center" FontWeight="SemiBold"/>
+            </DockPanel>
+            <TextBlock x:Name="EmptyShelf" Text="No saved bubbles in this chat." Visibility="Collapsed"
+                       Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"/>
+            <ScrollViewer x:Name="BubbleScroll" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled"
+                          PreviewMouseWheel="ScrollBubbles" Focusable="False">
+                <StackPanel x:Name="BubbleRow" Orientation="Horizontal"/>
+            </ScrollViewer>
+            <Border x:Name="Preview" Margin="0,9,0,0" CornerRadius="9" BorderThickness="1" Padding="9"
+                    BorderBrush="{DynamicResource {x:Static SystemColors.ControlDarkBrushKey}}" Visibility="Collapsed">
+                <StackPanel>
+                    <TextBox x:Name="PreviewText" IsReadOnly="True" BorderThickness="0" TextWrapping="Wrap"
+                             VerticalScrollBarVisibility="Auto" MaxHeight="138"
+                             AutomationProperties.Name="Saved suggestion"/>
+                    <StackPanel Margin="0,7,0,0" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button Content="Remove" Click="RemoveSelected"/>
+                        <Button Content="Copy" Click="CopySelected" Margin="6,0,0,0"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+            <Button x:Name="UndoButton" Content="Undo remove" Click="UndoRemove" Margin="0,7,0,0"
+                    HorizontalAlignment="Left" Visibility="Collapsed"/>
+        </StackPanel>
+        <TextBlock Text="Draft to save" FontWeight="SemiBold" Margin="0,0,0,5"/>
+        <TextBox x:Name="Draft" MinHeight="80" MaxHeight="135" AcceptsReturn="True" TextWrapping="Wrap"
+                 VerticalScrollBarVisibility="Auto" TextChanged="DraftChanged" AllowDrop="True"
+                 AutomationProperties.Name="Draft to save" AutomationProperties.AutomationId="Draft"/>
+        <DockPanel Margin="0,9,0,0">
+            <Button x:Name="SaveButton" DockPanel.Dock="Right" Content="Save" IsEnabled="False"
+                    Click="SaveDraft" Margin="8,0,0,0" AutomationProperties.AutomationId="SaveDraft"/>
+            <TextBlock x:Name="Status" Text="Paste the link to the Codex chat you want to use."
+                       VerticalAlignment="Center" TextWrapping="Wrap"
+                       AutomationProperties.LiveSetting="Polite"/>
+        </DockPanel>
+    </StackPanel>
+</Window>

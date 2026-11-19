@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <Version>0.1.0-preview</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Core/ComposerBubbles.Core.csproj" />
+    <Resource Include="../../Resources/AppIcon.png" Link="AppIcon.png" />
+  </ItemGroup>
+</Project>
