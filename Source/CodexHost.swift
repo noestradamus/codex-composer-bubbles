@@ -998,7 +998,10 @@ extension CodexHost {
             CFEqual($0.window, window) && CFEqual($0.editor, editor)
         }) else { return nil }
         let binding = composerBindings[index]
-        guard let button = CodexComposerWitness.find(from: editor, window: window), CFEqual(binding.button, button) else {
+        // The control can disappear briefly during a redraw. Still require
+        // the original handle on every use, but let it be found on a later poll.
+        guard let button = CodexComposerWitness.find(from: editor, window: window) else { return nil }
+        guard CFEqual(binding.button, button) else {
             composerBindings.remove(at: index)
             return nil
         }

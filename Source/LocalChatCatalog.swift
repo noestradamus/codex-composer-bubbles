@@ -22,6 +22,13 @@ final class LocalChatCatalog {
     private var connectedFile: FileID?
     private var cached: CachedMatch?
 
+    // Current Codex titles can omit this marker even when thread.name still
+    // includes it. Match the displayed spelling byte for byte and test it
+    // against every catalog row, including titles already stored that way.
+    private static let namedTitleMatches = """
+        (name COLLATE BINARY = ?1 OR replace(name, '</system-reminder>', '') COLLATE BINARY = ?1)
+        """
+
     init(databaseURL: URL? = nil) {
         let home = ProcessInfo.processInfo.environment["CODEX_HOME"]
             .flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0, isDirectory: true) : nil }
@@ -111,16 +118,16 @@ final class LocalChatCatalog {
 
     private func hasSavedCandidate(in database: OpaquePointer, title: String, savedKeys: Set<String>) -> Bool? {
         // Codex's primary key is indexed. Avoid scanning the catalog for a chat with no bubbles.
-        let sql = "SELECT 1 FROM threads WHERE id = ?1 AND name COLLATE BINARY = ?2"
+        let sql = "SELECT 1 FROM threads WHERE id = ?2 AND \(Self.namedTitleMatches)"
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else { return nil }
         defer { sqlite3_finalize(statement) }
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        guard sqlite3_bind_text(statement, 2, title, Int32(title.utf8.count), transient) == SQLITE_OK else { return nil }
+        guard sqlite3_bind_text(statement, 1, title, Int32(title.utf8.count), transient) == SQLITE_OK else { return nil }
         for key in savedKeys where key.hasPrefix("thread:") {
             let id = String(key.dropFirst("thread:".count))
             guard sqlite3_reset(statement) == SQLITE_OK,
-                  sqlite3_bind_text(statement, 1, id, -1, transient) == SQLITE_OK else { return nil }
+                  sqlite3_bind_text(statement, 2, id, -1, transient) == SQLITE_OK else { return nil }
             switch sqlite3_step(statement) {
             case SQLITE_ROW: return true
             case SQLITE_DONE: continue
@@ -139,10 +146,13 @@ final class LocalChatCatalog {
         // fallback title/preview can veto a collision but is never positive identity evidence.
         // Include other creators, archives and unsaved IDs before intersecting the unique result.
         let sql = """
-            SELECT id, name COLLATE BINARY = ?1
+            SELECT id, \(Self.namedTitleMatches)
             FROM threads
-            WHERE name COLLATE BINARY = ?1
-               OR ((name IS NULL OR name = '') AND (title COLLATE BINARY = ?1 OR preview COLLATE BINARY = ?1))
+            WHERE \(Self.namedTitleMatches)
+               OR ((name IS NULL OR name = '') AND (
+                    title COLLATE BINARY = ?1 OR replace(title, '</system-reminder>', '') COLLATE BINARY = ?1
+                    OR preview COLLATE BINARY = ?1 OR replace(preview, '</system-reminder>', '') COLLATE BINARY = ?1
+               ))
             LIMIT 2
             """
         var statement: OpaquePointer?
