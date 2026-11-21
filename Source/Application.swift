@@ -458,26 +458,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
               let url = URL(string: string.trimmingCharacters(in: .whitespacesAndNewlines)),
               let chat = CodexHost.copiedChatKey(url) else { return }
         finishLinkRequest()
-        guard let scope = host.read(in: windowID, { $0.acceptCopiedChat(chat, for: request.context) }) ?? nil else {
-            showError("The chat changed while linking. Click Save in the chat you want to use.")
-            return
-        }
+        let scope: LinkScope
         do {
+            let accepted = try host.read(in: windowID) { host -> LinkScope? in
+                if case .currentDraft(let original) = request.action {
+                    guard let text = try? host.draftForLink(in: request.context),
+                          original.utf8.elementsEqual(text.utf8) else { throw CaptureError.changed }
+                }
+                return host.acceptCopiedChat(chat, for: request.context)
+            }
+            guard let accepted = accepted ?? nil else {
+                showError("The chat changed while linking. Click Save in the chat you want to use.")
+                return
+            }
+            scope = accepted
             switch request.action {
             case .show: break
             case .assignEarlier(let id):
                 try store.assign(id, to: chat)
-            case .selectedText(let text):
-                try persist(text, in: chat, from: windowID)
-            case .currentDraft(let original):
-                guard let text = try host.read(in: windowID, { try $0.draftForLink(in: request.context) }),
-                      original.utf8.elementsEqual(text.utf8),
-                      host.read(in: windowID, { $0.acceptCopiedChat(chat, for: request.context) != nil }) == true else {
-                    showError("The draft or chat changed. Click Save again to keep the current draft.")
-                    return
-                }
+            case .selectedText(let text), .currentDraft(let text):
                 try persist(text, in: chat, from: windowID)
             }
+        } catch CaptureError.changed {
+            showError("The draft or chat changed. Click Save again to keep the current draft.")
+            return
         } catch { showError(error.localizedDescription); return }
         lastStatus = nil
         refresh()

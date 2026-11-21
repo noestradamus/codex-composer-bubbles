@@ -21,6 +21,30 @@ private enum PreviewFixture {
     }
 
     static func settle() { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+
+    static func checkText(_ text: NSTextView, in scroll: NSScrollView, matches original: String) {
+        precondition(text.string.utf8.elementsEqual(original.utf8))
+        let manager = text.textLayoutManager!
+        manager.textViewportLayoutController.layoutViewport()
+        let viewport = scroll.contentView.bounds.width
+        precondition(abs(text.frame.width - viewport) < 1)
+        precondition(abs(text.textContainer!.size.width - viewport) < 1)
+        let first = manager.textLayoutFragment(for: manager.documentRange.location)!
+        precondition(first.textLineFragments.count > 0)
+        for line in first.textLineFragments.prefix(8) {
+            precondition(line.typographicBounds.minX < viewport)
+        }
+
+        let last = NSRange(location: (original as NSString).length - 1, length: 1)
+        text.scrollRangeToVisible(last)
+        manager.textViewportLayoutController.layoutViewport()
+        let lastLocation = manager.location(manager.documentRange.endLocation, offsetBy: -1)!
+        let fragment = manager.textLayoutFragment(for: lastLocation)!
+        let line = fragment.textLineFragments.last!
+        let lineY = fragment.layoutFragmentFrame.minY + line.typographicBounds.midY
+        precondition(lineY >= scroll.documentVisibleRect.minY - 1 && lineY < scroll.documentVisibleRect.maxY + 1,
+                     "The final text line is outside the viewport")
+    }
 }
 
 @MainActor
@@ -89,32 +113,58 @@ private extension BubblePanelController {
                 present([SavedBubble(text: text, chatKey: "test", number: 1)])
                 PreviewFixture.click(pills[0])
                 PreviewFixture.settle()
-                let manager = previewText.layoutManager!, container = previewText.textContainer!
-                manager.ensureLayout(for: container)
-                let viewport = textScroll.contentView.bounds.width
-                precondition(abs(previewText.frame.width - viewport) < 1)
-                precondition(abs(container.size.width - viewport) < 1)
-                // Spaces and tabs may end beyond a line's typographic bounds.
-                for index in 0..<min(250, manager.numberOfGlyphs) {
-                    let glyph = NSRange(location: index, length: 1)
-                    let box = manager.boundingRect(forGlyphRange: glyph, in: container)
-                    let range = manager.characterRange(forGlyphRange: glyph, actualGlyphRange: nil)
-                    let character = (text as NSString).substring(with: range)
-                    if !character.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        precondition(box.minX < viewport, "A complete glyph is clipped by the scrollbar")
-                    }
-                }
-                let last = NSRange(location: (text as NSString).length - 1, length: 1)
-                previewText.scrollRangeToVisible(last)
-                PreviewFixture.settle()
-                let lastGlyph = manager.glyphRange(forCharacterRange: last, actualCharacterRange: nil)
-                precondition(textScroll.documentVisibleRect.intersects(manager.boundingRect(forGlyphRange: lastGlyph,
-                                                                                           in: container)))
+                PreviewFixture.checkText(previewText, in: textScroll, matches: text)
                 closePreview()
             }
         }
-        print("Passed inset and overlay preview text wrapping and final-glyph checks.")
+        print("Passed inset and overlay preview text wrapping and final-line checks.")
+
+        let trace = "18:04:23.822 [WARN] expected a completed staging artifact, retrying after 250 ms {step=load_manifest; path=/artifacts/checks/window-ownership.json}\n"
+        let longText = "Check the build log.\n" + String(repeating: trace, count: 1450) + "Final entry."
+        present([SavedBubble(text: longText, chatKey: "test", number: 1)])
+        let start = ProcessInfo.processInfo.systemUptime
+        PreviewFixture.click(pills[0])
+        let elapsed = ProcessInfo.processInfo.systemUptime - start
+        precondition(elapsed < 2.0, "Preview opening laid out the full build log")
+        PreviewFixture.checkText(previewText, in: textScroll, matches: longText)
+        closePreview()
+        let short = "Start here."
+        present([SavedBubble(text: short, chatKey: "test", number: 1)])
+        PreviewFixture.click(pills[0])
+        precondition(textScroll.documentVisibleRect.minY < 1)
+        PreviewFixture.checkText(previewText, in: textScroll, matches: short)
+        print("Passed a \(longText.utf8.count)-byte preview in \(Int(elapsed * 1000)) ms and return to a short preview.")
         retire()
+    }
+
+    func verifyInterruptedMove(on screen: CGRect) {
+        let anchor = CGRect(x: screen.midX - 200, y: screen.minY + 135, width: 450, height: 55)
+        let items = [SavedBubble(text: "Keep this in its chat.", chatKey: "test", number: 1)]
+        func present() { show(bubbles: items, anchor: anchor, screen: screen, hostFrame: screen) }
+        func mouse(_ kind: NSEvent.EventType) -> NSEvent {
+            NSEvent.mouseEvent(with: kind, location: .zero, modifierFlags: [], timestamp: 0,
+                               windowNumber: panel.windowNumber, context: nil, eventNumber: 1,
+                               clickCount: 1, pressure: 1)!
+        }
+        present()
+        let original = panel.frame
+        move.mouseDown(with: mouse(.leftMouseDown))
+        move.onMoveBy?(CGPoint(x: -80, y: 15))
+        precondition(panel.frame != original && dragStart != nil)
+        hide()
+        precondition(!panel.isVisible && dragStart == nil && !didMove)
+        move.mouseUp(with: mouse(.leftMouseUp))
+        present()
+        precondition(panel.frame == original)
+        move.mouseDown(with: mouse(.leftMouseDown))
+        move.onMoveBy?(CGPoint(x: -80, y: 15))
+        let relocated = panel.frame
+        move.mouseUp(with: mouse(.leftMouseUp))
+        hide()
+        present()
+        precondition(relocated != original && panel.frame == relocated)
+        retire()
+        print("Passed interrupted shelf move, original pin recovery and subsequent normal move.")
     }
 }
 
@@ -150,6 +200,27 @@ private extension LinkedBubbleWindow {
         precondition(items.map(\.id) == [id] && !list.isHidden && undo.isHidden)
         close()
     }
+
+    func verifyScrollingDismissesPreview(removed: () -> UUID?) {
+        let first = orbs[0]
+        PreviewFixture.click(first)
+        precondition(selected === first && !previewSurface.isHidden)
+        let wheel = CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+                            wheelCount: 2, wheel1: 0, wheel2: -480, wheel3: 0)!
+        list.scrollWheel(with: NSEvent(cgEvent: wheel)!)
+        PreviewFixture.settle()
+        precondition(list.visibleSurface(of: first).isEmpty && selected == nil && previewSurface.isHidden)
+        PreviewFixture.press(remove)
+        precondition(removed() == nil)
+        let last = orbs.last!
+        stack.scrollToVisible(last.frame)
+        PreviewFixture.click(last)
+        PreviewFixture.checkText(preview, in: previewScroll, matches: items.last!.text)
+        let lastID = items.last!.id
+        PreviewFixture.press(remove)
+        precondition(removed() == lastID)
+        close()
+    }
 }
 
 @main
@@ -174,6 +245,16 @@ private enum PreviewInteractionChecks {
         LinkedBubbleWindow(items: [], near: .zero, on: area, undoID: item.id,
             onRemove: { _ in false }, onUndo: { $0 == item.id ? item : nil }).verifyReopenedUndo(id: item.id)
         print("Passed linked selection, stable click targets, scoped Remove and last-bubble Undo checks.")
+        let items = (1...9).map { (number: Int) in
+            SavedBubble(text: "Check the deployment log for scenario \(number).\n" +
+                        String(repeating: "Look for repeated failures in the build report.\n", count: 90) + "End.",
+                        chatKey: "test", number: number)
+        }
+        var removed: UUID?
+        LinkedBubbleWindow(items: items, near: .zero, on: area, undoID: nil,
+            onRemove: { removed = $0; return true }, onUndo: { _ in nil }).verifyScrollingDismissesPreview { removed }
+        print("Passed closing offscreen linked preview and removing the newly visible selection.")
+        BubblePanelController().verifyInterruptedMove(on: area)
         BubblePanelController().verifyIncrementalRows(on: area)
     }
 }

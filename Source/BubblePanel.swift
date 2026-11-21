@@ -252,9 +252,10 @@ private final class BubbleMoveHandle: NSButton {
     override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
 
     override func mouseDown(with event: NSEvent) {
+        guard start == nil else { return }
         start = NSEvent.mouseLocation
-        onMoveBegan?()
         NSCursor.closedHand.push()
+        onMoveBegan?()
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -265,9 +266,14 @@ private final class BubbleMoveHandle: NSButton {
 
     override func mouseUp(with event: NSEvent) {
         guard start != nil else { return }
+        cancelMove()
+        onMoveEnded?()
+    }
+
+    func cancelMove() {
+        guard start != nil else { return }
         start = nil
         NSCursor.pop()
-        onMoveEnded?()
     }
 }
 
@@ -333,6 +339,12 @@ private final class BubbleScroll: NSScrollView {
     func exitedVertically(at windowPoint: NSPoint) -> Bool {
         let y = convert(windowPoint, from: nil).y
         return y < bounds.minY - 8 || y > bounds.maxY + 8
+    }
+
+    func visibleSurface(of pill: BubblePill) -> NSRect {
+        guard let documentView else { return .zero }
+        let face = documentView.convert(BubbleGlass.surfaceRect(in: pill.bounds), from: pill)
+        return face.intersection(contentView.documentVisibleRect)
     }
 
     func scrollHorizontally(to requested: CGFloat) {
@@ -557,11 +569,9 @@ private final class BubbleDocument: TopDownDocument {
 /// The document must wrap at that final width, including when the system changes scroller style.
 private final class PreviewTextScroll: NSScrollView {
     private var fitting = false
-    private var fittedViewport: NSSize?
 
     func setText(_ value: String) {
         (documentView as? NSTextView)?.string = value
-        fittedViewport = nil
     }
 
     override func tile() {
@@ -570,27 +580,21 @@ private final class PreviewTextScroll: NSScrollView {
     }
 
     func fitDocument() {
-        guard !fitting, let text = documentView as? NSTextView,
-              fittedViewport != contentView.bounds.size || text.frame.width != contentView.bounds.width,
-              let manager = text.layoutManager, let container = text.textContainer else { return }
+        guard !fitting, let text = documentView as? NSTextView else { return }
         fitting = true
         defer { fitting = false }
-        // A newly visible scrollbar can change the width once more after the first fit.
+        // Let TextKit 2 resize the document as it lays out the viewport. Only
+        // constrain the width and minimum height to the tiled scroll area.
         for _ in 0..<2 {
             let viewport = contentView.bounds.size
             guard viewport.width > 0, viewport.height > 0 else { return }
-            if text.frame.width != viewport.width {
-                text.setFrameSize(NSSize(width: viewport.width, height: text.frame.height))
+            if text.minSize.height != viewport.height {
+                text.minSize = NSSize(width: 0, height: viewport.height)
             }
-            manager.ensureLayout(for: container)
-            let bottom = max(manager.usedRect(for: container).maxY, manager.extraLineFragmentRect.maxY)
-            let size = NSSize(width: viewport.width, height: max(viewport.height, ceil(bottom) + 2))
-            if text.frame.size != size { text.setFrameSize(size) }
-            super.tile()
-            if contentView.bounds.size == viewport {
-                fittedViewport = viewport
-                break
+            if text.frame.width != viewport.width || text.frame.height < viewport.height {
+                text.setFrameSize(NSSize(width: viewport.width, height: max(text.frame.height, viewport.height)))
             }
+            if contentView.bounds.size == viewport { break }
         }
     }
 }
@@ -641,7 +645,7 @@ private final class LinkedBubbleWindow: NSWindow {
     private let hint = NSTextField(labelWithString: "")
     private let undo = NSButton(title: "Undo", target: nil, action: nil)
     private let remove = NSButton(title: "Remove", target: nil, action: nil)
-    private let preview = NSTextView()
+    private let preview = NSTextView(usingTextLayoutManager: true)
     private let previewScroll = PreviewTextScroll()
     private let previewSurface = BubbleCallout(frame: .zero)
     private let initialScreen: NSRect
@@ -653,6 +657,7 @@ private final class LinkedBubbleWindow: NSWindow {
     private var selected: BubblePill?
     private var style: BubbleStyle
     private var expansionAbove: CGFloat = 0
+    private var layingOutSnapshot = false
     private var dragging = false
     private var dismissed = false
 
@@ -713,6 +718,8 @@ private final class LinkedBubbleWindow: NSWindow {
                                y: max(screen.minY + 4, min(idealY, screen.maxY - frame.height - 4))))
         layoutSnapshot()
         list.layoutBubbles(orbs, centered: false)
+        NotificationCenter.default.addObserver(self, selector: #selector(closeOffscreenPreview),
+                                               name: NSView.boundsDidChangeNotification, object: list.contentView)
         NotificationCenter.default.addObserver(self, selector: #selector(deactivated),
                                                name: NSApplication.didResignActiveNotification, object: NSApp)
     }
@@ -748,6 +755,7 @@ private final class LinkedBubbleWindow: NSWindow {
 
     @objc private func removeSelection() {
         guard acceptsSnapshotAction, let selected, let index = orbs.firstIndex(of: selected) else { return }
+        guard !list.visibleSurface(of: selected).isEmpty else { select(nil); return }
         let id = items[index].id
         guard onRemove(id), !dismissed else { return }
         undoID = id
@@ -770,6 +778,8 @@ private final class LinkedBubbleWindow: NSWindow {
     }
 
     private func layoutSnapshot() {
+        layingOutSnapshot = true
+        defer { layingOutSnapshot = false }
         let display = screen?.visibleFrame ?? initialScreen
         let top = frame.maxY - expansionAbove
         let width = contentRect(forFrameRect: frame).width
@@ -809,8 +819,16 @@ private final class LinkedBubbleWindow: NSWindow {
     func setStyle(_ style: BubbleStyle) {
         self.style = style
         orbs.forEach { $0.style = style }
+        layingOutSnapshot = true
         list.layoutBubbles(orbs, centered: false)
         if let selected { stack.scrollToVisible(selected.frame) }
+        layingOutSnapshot = false
+        closeOffscreenPreview()
+    }
+
+    @objc private func closeOffscreenPreview() {
+        guard !layingOutSnapshot, let selected, list.visibleSurface(of: selected).isEmpty else { return }
+        select(nil)
     }
 
     func present() {
@@ -874,7 +892,7 @@ final class BubblePanelController {
     private let scroll = BubbleScroll(frame: .zero)
     private let document = BubbleDocument(frame: .zero)
     private let textScroll = PreviewTextScroll(frame: .zero)
-    private let previewText = NSTextView(frame: .zero)
+    private let previewText = NSTextView(usingTextLayoutManager: true)
     private let remove = NSButton(title: "Remove", target: nil, action: nil)
     private let cancelLink = NSButton(title: "Cancel", target: nil, action: nil)
     private let previewSurface = BubbleCallout(frame: .zero)
@@ -1128,15 +1146,15 @@ final class BubblePanelController {
     }
 
     func hide() {
-        guard dragStart == nil else { return }
+        move.cancelMove()
+        dragStart = nil
+        didMove = false
         stopSaveConfirmation()
         closePreview()
         if panel.isVisible { panel.orderOut(nil) }
     }
 
     func retire() {
-        dragStart = nil
-        didMove = false
         hide()
         linkedWindow?.close()
         linkedWindow = nil
@@ -1233,8 +1251,7 @@ final class BubblePanelController {
     }
 
     private func visibleSurface(of pill: BubblePill) -> NSRect {
-        let face = document.convert(BubbleGlass.surfaceRect(in: pill.bounds), from: pill)
-        return face.intersection(scroll.contentView.documentVisibleRect)
+        scroll.visibleSurface(of: pill)
     }
 
     private func requestPreview(_ id: UUID) {
@@ -1314,9 +1331,13 @@ final class BubblePanelController {
                 text.boundingRect(with: NSSize(width: max(1, width), height: .greatestFiniteMagnitude),
                                   options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: [.font: font])
             }
-            let natural = extent(availableWidth - horizontalInsets)
-            let width = min(availableWidth, max(155, ceil(natural.width) + horizontalInsets))
-            previewMetrics = (availableWidth, width, ceil(extent(width - horizontalInsets).height))
+            if text.length > 1024 {
+                previewMetrics = (availableWidth, availableWidth, 260)
+            } else {
+                let natural = extent(availableWidth - horizontalInsets)
+                let width = min(availableWidth, max(155, ceil(natural.width) + horizontalInsets))
+                previewMetrics = (availableWidth, width, ceil(extent(width - horizontalInsets).height))
+            }
         }
         guard let metrics = previewMetrics else { return }
         let width = metrics.width

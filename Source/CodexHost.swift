@@ -963,6 +963,7 @@ struct CodexLinkContext {
     fileprivate let row: CodexRowContext?
     fileprivate let panel: String?
     fileprivate let evidence: Set<String>
+    fileprivate let title: Data?
 }
 
 enum LinkScope {
@@ -977,7 +978,7 @@ extension CodexHost {
             guard surface == nil, !AXIsProcessTrusted(), let number = Self.frontWindowNumber(for: front),
                   target.id == number else { return nil }
             return CodexLinkContext(pid: front.processIdentifier, window: nil, windowNumber: number,
-                                    editor: nil, button: nil, row: nil, panel: nil, evidence: [])
+                                    editor: nil, button: nil, row: nil, panel: nil, evidence: [], title: nil)
         }
         if let surface {
             guard surface.process == pid, CFEqual(window, surface.window) else { return nil }
@@ -990,7 +991,12 @@ extension CodexHost {
         let button = primaryScopeToken == nil && selectedRow == nil
             ? editor.flatMap { CodexComposerWitness.find(from: $0, window: window) } : nil
         return CodexLinkContext(pid: pid, window: window, windowNumber: nil, editor: editor,
-                                button: button, row: selectedRow, panel: primaryScopeToken, evidence: observedKeys)
+                                button: button, row: selectedRow, panel: primaryScopeToken, evidence: observedKeys,
+                                title: observedKeys.isEmpty ? linkWindowTitle(window) : nil)
+    }
+
+    private func linkWindowTitle(_ window: AXUIElement) -> Data? {
+        CodexChatTitle.validated(attribute(window, "AXTitle") as? String).map { Data($0.utf8) }
     }
 
     private func keyForComposer(_ editor: AXUIElement, window: AXUIElement) -> String? {
@@ -1024,8 +1030,8 @@ extension CodexHost {
         guard let front = NSWorkspace.shared.frontmostApplication,
               front.bundleIdentifier == hostID, front.processIdentifier == context.pid else { return false }
         if let window = context.window {
-            guard let (_, _, current) = focusedHostWindow() else { return false }
-            return CFEqual(window, current)
+            guard let (_, _, current) = focusedHostWindow(), CFEqual(window, current) else { return false }
+            return context.title.map { linkWindowTitle(current) == $0 } ?? true
         }
         return context.windowNumber.map { Self.frontWindowNumber(for: front) == $0 } == true
     }
@@ -1041,29 +1047,35 @@ extension CodexHost {
 
     func acceptCopiedChat(_ chat: String, for context: CodexLinkContext) -> LinkScope? {
         guard inLinkWindow(context), context.evidence.allSatisfy({ $0 == chat }) else { return nil }
-        guard context.window != nil else { return .singleAction }
-        _ = currentChatKey()
+        guard let window = context.window else { return .singleAction }
+        if let editor = context.editor {
+            guard let surface = current(freshScan: true), CFEqual(surface.editor, editor),
+                  CFEqual(surface.window, window) else { return nil }
+            if let original = context.button {
+                guard let button = CodexComposerWitness.find(from: editor, window: window),
+                      CFEqual(button, original) else { return nil }
+            }
+        } else {
+            _ = currentChatKey()
+        }
         guard !isForeignContext, observedKeys.allSatisfy({ $0 == chat }),
               context.panel == nil || primaryScopeToken == context.panel else { return nil }
         if let row = context.row {
             guard let currentRow = selectedRow, currentRow.matches(row) else { return nil }
-            remember(row, as: chat)
         }
         if let panel = context.panel, Self.localPanelKey(identifier: panel) == nil {
             guard rememberCopiedPanel(panel, as: chat) else { return nil }
         }
-        if let original = context.button, let editor = context.editor, let window = context.window {
-            guard let surface = current(freshScan: true), CFEqual(surface.editor, editor),
-                  CFEqual(surface.window, window), !isForeignContext, observedKeys.allSatisfy({ $0 == chat }),
-                  let button = CodexComposerWitness.find(from: editor, window: window),
-                  CFEqual(button, original) else { return nil }
+        if let row = context.row { remember(row, as: chat) }
+        if let button = context.button, let editor = context.editor {
             composerBindings.removeAll { CFEqual($0.window, window) && CFEqual($0.editor, editor) }
             composerBindings.append((window, editor, button, chat))
             if composerBindings.count > 32 { composerBindings.removeFirst() }
         }
-        if let resolved = currentChatKey() { return resolved == chat ? .currentChat : nil }
+        let resolved = currentChatKey()
         guard inLinkWindow(context), !isForeignContext, observedKeys.allSatisfy({ $0 == chat }),
               context.panel == nil || primaryScopeToken == context.panel else { return nil }
+        if let resolved { return resolved == chat ? .currentChat : nil }
         return .singleAction
     }
 }

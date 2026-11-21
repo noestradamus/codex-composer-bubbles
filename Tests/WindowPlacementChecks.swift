@@ -118,6 +118,22 @@ enum WindowPlacementChecks {
                 if height == 800 { precondition(layout.frame.minX + layout.header.minX == x) }
             }
         }
+        // Two overlapping windows leave a short strip. Fit a complete row
+        // there even if the pin is too centered to fit the row on either side.
+        let owner = CGRect(x: -1500, y: 100, width: 690, height: 610)
+        let exposed = CGRect(x: owner.minX, y: owner.minY, width: 320, height: 60)
+        let upper = CGRect(x: owner.minX - 65, y: exposed.maxY, width: 950, height: 690)
+        let lowerRight = CGRect(x: exposed.maxX, y: owner.minY - 70, width: 920, height: 500)
+        let centered = pinned(exposed.midX - 10, exposed.midY + 10)
+        let exposedRoom = centered.visibleRoom(on: screen, host: screen, window: owner, count: 1,
+                                               saveWidth: SaveButtonDrawing.reservedWidth,
+                                               avoiding: [], occludedBy: [upper, lowerRight])!
+        let fitted = centered.layout(displayFrame: screen.frame, visibleFrame: exposedRoom, count: 1)
+        precondition(fitted.horizontal && exposed.contains(fitted.frame))
+        precondition(fitted.save.width == SaveButtonDrawing.reservedWidth && fitted.list.height == BubbleGlass.rowHeight)
+        let free = centered.layoutDisplay(screen, host: screen, window: owner).visibleFrame
+        let restored = centered.layout(displayFrame: screen.frame, visibleFrame: free, count: 1)
+        precondition(restored.frame.minX + restored.header.minX == exposed.midX - 10)
         checkDisconnect()
         print("Passed simultaneous shelf placement, independent pins, move/resize, relaunch and collision checks.")
     }

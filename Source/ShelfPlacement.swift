@@ -371,16 +371,26 @@ struct ShelfPlacement: Codable, Equatable {
         let x = min(max(pin.x, room.minX), room.maxX - gripWidth)
         let top = min(max(pin.y, room.minY + gripHeight), room.maxY)
         var grip = NSRect(x: x, y: top - gripHeight, width: gripWidth, height: gripHeight)
-        let right = room.maxX - grip.minX, left = grip.maxX - room.minX
         let preferredWidth = laneWidth ?? 279
-        let preferRight = right >= preferredWidth || right >= left
-        let span = min(preferredWidth, max(right, left))
         let gap = min(4, max(0, room.width - gripWidth))
         let saveWidth = min(SaveButtonDrawing.reservedWidth, max(0, room.width - gripWidth - gap))
         let laneHeight = min(Self.laneHeight, room.height)
         let bottom = min(max(grip.midY - laneHeight / 2, room.minY), room.maxY - laneHeight)
+        let above = room.maxY - (bottom + laneHeight), below = bottom - room.minY
+        let rowWidth = gripWidth + saveWidth + 90 + 2 * gap
+        var right = room.maxX - grip.minX, left = grip.maxX - room.minX
+        // An exposed strip can have room for a row but nowhere to stack the
+        // bubbles. Shift the rendered grip only far enough to make a row fit.
+        if count > 0, max(above, below) < Self.laneHeight,
+           max(right, left) < rowWidth, min(preferredWidth, room.width) >= rowWidth {
+            grip.origin.x = right >= left ? room.maxX - rowWidth : room.minX + rowWidth - gripWidth
+            right = room.maxX - grip.minX
+            left = grip.maxX - room.minX
+        }
+        let preferRight = right >= preferredWidth || right >= left
+        let span = min(preferredWidth, max(right, left))
         let area: NSRect, save: NSRect, list: NSRect
-        let isRow = span >= gripWidth + saveWidth + 90 + 2 * gap
+        let isRow = span >= rowWidth
         if count == 0 {
             // Keep the tab pinned and close the bubble lane all the way up to Save.
             let available = max(0, (preferRight ? right : left) - gripWidth)
@@ -404,7 +414,6 @@ struct ShelfPlacement: Codable, Equatable {
             // caption between the controls. Stack the scrollable bubbles instead.
             let width = min(room.width, max(gripWidth + gap + saveWidth, 142))
             let originX = min(max(preferRight ? grip.minX : grip.maxX - width, room.minX), room.maxX - width)
-            let above = room.maxY - (bottom + laneHeight), below = bottom - room.minY
             let fitsBesideGrip = max(right, left) >= gripWidth + gap + saveWidth
             let goesUp = below < min((fitsBesideGrip ? 2 : 3) * laneHeight, above)
             let space = goesUp ? above : below
