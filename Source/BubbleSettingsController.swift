@@ -112,7 +112,8 @@ private final class BubbleStylePreview: NSView {
         let frames = frames(in: ink.bounds)
         GlassTabDrawing.draw(in: frames.tab, nativeBackdrop: !backdrops.isEmpty)
         for (index, tile) in frames.tiles.enumerated() {
-            BubbleGlass.draw(in: tile, style: style, caption: examples[index], number: index + 1, orientation: orientation,
+            let caption = orientation == .vertical ? BubbleGlass.portraitWord(for: examples[index]) : examples[index]
+            BubbleGlass.draw(in: tile, style: style, caption: caption, number: index + 1, orientation: orientation,
                              nativeBackdrop: backdrops.indices.contains(index + 1))
         }
         SaveButtonDrawing.draw(in: frames.save, style: saveStyle, bubbleStyle: style, orientation: orientation,

@@ -66,7 +66,10 @@ private struct RowPress {
 }
 
 private final class BubblePill: NSButton, NSDraggingSource {
+    private static let suggestionHelp = "Click to open or close the preview. Drag toward the composer to restore."
     let fullText: String?
+    private lazy var hoverTitle = fullText.map { BubbleGlass.hoverTitle(for: $0) } ?? ""
+    private lazy var portraitWord = BubbleGlass.portraitWord(for: hoverTitle)
     private var number: Int?
     private var measuredSize: NSSize?
     var style: BubbleStyle = .shortCaptions {
@@ -79,7 +82,12 @@ private final class BubblePill: NSButton, NSDraggingSource {
     }
     var saveStyle: SaveButtonStyle = .bookmarkAndText { didSet { needsDisplay = true } }
     var orientation: ShelfOrientation = .horizontal {
-        didSet { if orientation != oldValue { needsDisplay = true } }
+        didSet {
+            guard orientation != oldValue else { return }
+            updateToolTip()
+            updateSpokenLabel()
+            needsDisplay = true
+        }
     }
     var surface: NSRect {
         if fullText == nil {
@@ -108,6 +116,7 @@ private final class BubblePill: NSButton, NSDraggingSource {
         didSet {
             guard isOpen != oldValue else { return }
             setAccessibilityExpanded(isOpen)
+            updateToolTip()
             needsDisplay = true
         }
     }
@@ -130,7 +139,7 @@ private final class BubblePill: NSButton, NSDraggingSource {
         setAccessibilityHelp(text ?? "Save the focused draft, or drop selected text here.")
         if text != nil { setAccessibilityExpanded(false) }
         toolTip = text == nil ? "Save the Codex draft, or drop text here. Right-click for Settings."
-                              : "Click to open or close the preview. Drag toward the composer to restore."
+                              : Self.suggestionHelp
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
@@ -145,7 +154,16 @@ private final class BubblePill: NSButton, NSDraggingSource {
     private func updateSpokenLabel() {
         guard fullText != nil else { return }
         let name = style == .numbers ? number.map { "Bubble " + String($0) } ?? "Saved suggestion" : "Saved suggestion"
-        setAccessibilityLabel(name + ", " + title)
+        setAccessibilityLabel(name + ", " + (orientation == .vertical ? hoverTitle : title))
+    }
+
+    private func updateToolTip() {
+        guard fullText != nil else { return }
+        if orientation == .vertical {
+            toolTip = isOpen || hoverTitle.isEmpty ? nil : hoverTitle
+        } else {
+            toolTip = Self.suggestionHelp
+        }
     }
 
     @objc private func pressed() {
@@ -165,7 +183,8 @@ private final class BubblePill: NSButton, NSDraggingSource {
     }
 
     private func drawSuggestion(nativeBackdrop: Bool) {
-        BubbleGlass.draw(in: bounds, style: style, caption: title, number: number, orientation: orientation,
+        let caption = orientation == .vertical && style == .shortCaptions ? portraitWord : title
+        BubbleGlass.draw(in: bounds, style: style, caption: caption, number: number, orientation: orientation,
                          selected: isOpen || isHighlighted, nativeBackdrop: nativeBackdrop)
     }
 
@@ -1305,6 +1324,7 @@ final class BubblePanelController {
     private func layoutPills(_ geometry: ShelfLayout) {
         let horizontal = geometry.horizontal
         let orientationChanged = lastLayout?.horizontal != horizontal || lastLayout?.controlOrientation != geometry.controlOrientation
+        if orientationChanged { panel.allowsToolTipsWhenApplicationIsInactive = geometry.controlOrientation == .vertical }
         move.frame = geometry.header
         save.orientation = geometry.controlOrientation
         save.frame = geometry.save

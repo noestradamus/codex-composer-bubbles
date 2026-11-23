@@ -169,8 +169,10 @@ private extension BubblePanelController {
 
     func verifyVerticalShelf(on screen: CGRect) {
         let anchor = CGRect(x: screen.midX - 155, y: screen.midY - 110, width: 460, height: 55)
+        let firstTitle = "Review the flaky unit tests"
         let items = (1...14).map { (number: Int) in
-            SavedBubble(text: "Review test \(number) and check the exact text. 修正 👩🏽‍💻", chatKey: "test", number: number)
+            let title = number == 1 ? firstTitle : "Review test \(number)"
+            return SavedBubble(text: title + "\nCheck the exact text. 修正 👩🏽‍💻", chatKey: "test", number: number)
         }
         func present(_ items: [SavedBubble]) {
             show(bubbles: items, anchor: anchor, screen: screen, hostFrame: screen)
@@ -195,7 +197,11 @@ private extension BubblePanelController {
         let portrait = BubbleGlass.portraitCell(for: .shortCaptions)
         precondition(pills[0].frame.size == portrait && save.frame.size == portrait)
         precondition(save.orientation == .vertical && pills[0].orientation == .vertical)
-        precondition(BubbleGlass.verticalLabel("Review changes", fitting: pills[0].surface.height - 12) == "Review…")
+        precondition(BubbleGlass.portraitWord(for: firstTitle) == "Tests")
+        precondition(BubbleGlass.portraitWord(for: "Review logs from yesterday") == "Logs")
+        precondition(["ログ", "確認", "テスト", "実行"].contains(BubbleGlass.portraitWord(for: "ログを確認してからテストを実行")))
+        precondition(BubbleGlass.hoverTitle(for: String(repeating: "LongWord", count: 32)).count <= 73)
+        precondition(panel.allowsToolTipsWhenApplicationIsInactive && pills[0].toolTip == firstTitle)
         precondition(BubbleGlass.verticalLabel("Save", fitting: 48) == "Save")
         precondition(BubbleGlass.verticalLabel("修👩🏽‍💻正を確認", fitting: 36) == "修👩🏽‍💻…")
         for saveStyle in SaveButtonStyle.allCases {
@@ -205,6 +211,7 @@ private extension BubblePanelController {
         PreviewFixture.click(pills[0])
         precondition(card.isVisible && selectedID == items[0].id && !panel.frame.intersects(card.frame))
         precondition(previewText.string == items[0].text)
+        precondition(pills[0].toolTip == nil)
 
         let p = pills[0].convert(NSPoint(x: pills[0].bounds.midX, y: pills[0].bounds.midY), to: nil)
         let next = NSPoint(x: p.x, y: p.y + 160)
@@ -212,6 +219,7 @@ private extension BubblePanelController {
         pills[0].mouseDragged(with: pressEvent(.leftMouseDragged, at: next))
         pills[0].mouseUp(with: pressEvent(.leftMouseUp, at: next))
         precondition(scroll.browseOffset > 100 && selectedID == nil && !card.isVisible)
+        precondition(pills[0].toolTip == firstTitle)
 
         let before = scroll.browseOffset
         let wheel = CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
@@ -243,6 +251,7 @@ private extension BubblePanelController {
         present([added] + items)
         precondition(scroll.horizontal && panel.convertToScreen(move.frame) == tab)
         precondition(save.orientation == .horizontal && pills[0].surface.width > pills[0].surface.height)
+        precondition(!panel.allowsToolTipsWhenApplicationIsInactive)
         retire()
         print("Passed Save menu layout switching, vertical wheel, mouse pan, sideways export, preview and newest bubble reveal.")
     }

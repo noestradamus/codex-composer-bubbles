@@ -1,4 +1,5 @@
 import AppKit
+import NaturalLanguage
 import SwiftUI
 
 #if compiler(>=6.2)
@@ -86,6 +87,46 @@ enum BubbleGlass {
         var result = excerpt.joined(separator: " ")
         while let last = result.last, ".,!?:;。！？、".contains(last), result.count > 1 { result.removeLast() }
         return result
+    }
+
+    static func hoverTitle(for text: String) -> String {
+        let lines = text.prefix(257).split(whereSeparator: { $0.isNewline })
+        let lead = lines.first { line in line.contains { !$0.isWhitespace } } ?? ""
+        let words = lead.split(whereSeparator: { $0.isWhitespace })
+        let title = words.prefix(9).joined(separator: " ")
+        let excerpt = title.prefix(72)
+        let clipped = lead.count > 256 || words.count > 9 || excerpt.count < title.count
+        return clipped ? excerpt.trimmingCharacters(in: .whitespacesAndNewlines) + "…" : title
+    }
+
+    private static let captionTagger = NLTagger(tagSchemes: [.lexicalClass])
+    private static let generalNouns: Set<String> = ["issue", "issues", "problem", "problems", "thing", "things"]
+
+    static func portraitWord(for title: String) -> String {
+        guard !title.isEmpty else { return "" }
+        let tagger = captionTagger
+        tagger.string = title
+        defer { tagger.string = nil }
+        var first: String?
+        var verb: String?
+        var noun: String?
+        var subject: String?
+        tagger.enumerateTags(in: title.startIndex..<title.endIndex, unit: .word, scheme: .lexicalClass,
+                             options: [.omitWhitespace, .omitPunctuation]) { tag, range in
+            if noun != nil && (tag == .preposition || tag == .conjunction) { return false }
+            let word = String(title[range])
+            guard word.contains(where: { $0.isLetter || $0.isNumber }) else { return true }
+            if first == nil { first = word }
+            if tag == .verb && word.lowercased() != "please" { verb = word }
+            // The last noun in the opening phrase is usually its subject or object.
+            if tag == .noun {
+                noun = word
+                if !generalNouns.contains(word.lowercased()) { subject = word }
+            }
+            return true
+        }
+        let word = subject ?? noun ?? verb ?? first ?? String(title.prefix(while: { !$0.isWhitespace }))
+        return word.prefix(1).uppercased() + word.dropFirst()
     }
 
     static func surfaceRect(in bounds: NSRect, orientation: ShelfOrientation = .horizontal) -> NSRect {
