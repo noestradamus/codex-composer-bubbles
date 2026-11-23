@@ -51,9 +51,10 @@ private final class ClearBubbleBackdrop: NSView {
 @MainActor
 enum BubbleGlass {
     nonisolated static let rowHeight: CGFloat = 40
+    static let verticalLabelLineHeight: CGFloat = 12
 
     nonisolated static func portraitCell(for style: BubbleStyle) -> NSSize {
-        NSSize(width: rowHeight, height: style == .shortCaptions ? 108 : 64)
+        NSSize(width: rowHeight, height: style == .shortCaptions ? 108 : 78)
     }
 
     static func cellSize(for style: BubbleStyle, caption: String? = nil, number: Int? = nil) -> NSSize {
@@ -194,18 +195,11 @@ enum BubbleGlass {
                      number: Int?, orientation: ShelfOrientation = .horizontal,
                      selected: Bool = false, nativeBackdrop: Bool = false) {
         let surface = surfaceRect(in: bounds, orientation: orientation)
-        guard !surface.isEmpty, let context = NSGraphicsContext.current?.cgContext else { return }
+        guard !surface.isEmpty else { return }
         drawSurface(in: surface, selected: selected, nativeBackdrop: nativeBackdrop)
-        context.saveGState()
-        defer { context.restoreGState() }
-        let labelRect: NSRect
         if orientation == .vertical && style == .shortCaptions {
-            context.translateBy(x: surface.midX, y: surface.midY)
-            context.rotate(by: -.pi / 2)
-            labelRect = NSRect(x: -surface.height / 2, y: -surface.width / 2,
-                               width: surface.height, height: surface.width)
-        } else {
-            labelRect = surface
+            drawVerticalLabel(caption, in: surface.insetBy(dx: 4, dy: 6))
+            return
         }
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
@@ -215,15 +209,15 @@ enum BubbleGlass {
         let uprightNumber = orientation == .vertical && style == .numbers
         if uprightNumber {
             let measured = text.size(withAttributes: [.font: typeface]).width
-            let room = max(1, labelRect.width - 4)
+            let room = max(1, surface.width - 4)
             if measured > room {
                 let fitted = max(6, floor(typeface.pointSize * room / measured))
                 typeface = .monospacedDigitSystemFont(ofSize: fitted, weight: .medium)
             }
         }
-        if style == .shortCaptions, text.size(withAttributes: [.font: typeface]).width > labelRect.width - 10 {
+        if style == .shortCaptions, text.size(withAttributes: [.font: typeface]).width > surface.width - 10 {
             for candidate in [NSFont.systemFont(ofSize: 12, weight: .medium, width: .init(rawValue: -0.1)), compactCaptionFont]
-                where text.size(withAttributes: [.font: candidate]).width <= labelRect.width - 10 {
+                where text.size(withAttributes: [.font: candidate]).width <= surface.width - 10 {
                 typeface = candidate
                 break
             }
@@ -232,12 +226,34 @@ enum BubbleGlass {
             .font: typeface, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph
         ]
         let textSize = text.size(withAttributes: attributes)
-        let padding = uprightNumber ? 2 : min(11, max(5, floor((labelRect.width - textSize.width) / 2)))
-        let available = labelRect.insetBy(dx: padding, dy: 0)
+        let padding = uprightNumber ? 2 : min(11, max(5, floor((surface.width - textSize.width) / 2)))
+        let available = surface.insetBy(dx: padding, dy: 0)
         guard available.width > 0 else { return }
         let height = ceil(textSize.height)
         text.draw(in: NSRect(x: available.minX, y: available.midY - height / 2,
                              width: available.width, height: height + 1), withAttributes: attributes)
+    }
+
+    static func verticalLabel(_ text: String, fitting height: CGFloat) -> String {
+        let rows = Int(max(0, height) / verticalLabelLineHeight)
+        guard rows > 0 else { return "" }
+        let prefix = text.prefix(rows + 1)
+        guard prefix.count > rows else { return String(prefix) }
+        return prefix.prefix(rows - 1).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+    }
+
+    static func drawVerticalLabel(_ text: String, in bounds: NSRect) {
+        guard !bounds.isEmpty else { return }
+        let label = verticalLabel(text, fitting: bounds.height)
+        let attributes: [NSAttributedString.Key: Any] = [.font: captionFont, .foregroundColor: NSColor.labelColor]
+        let lineHeight = verticalLabelLineHeight
+        var centerY = bounds.midY + CGFloat(label.count - 1) * lineHeight / 2
+        for character in label {
+            let glyph = String(character) as NSString
+            let size = glyph.size(withAttributes: attributes)
+            glyph.draw(at: NSPoint(x: bounds.midX - size.width / 2, y: centerY - size.height / 2), withAttributes: attributes)
+            centerY -= lineHeight
+        }
     }
 
     // A drag image has no live backing window. A narrow shaded edge keeps its

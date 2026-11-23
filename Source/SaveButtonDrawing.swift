@@ -52,7 +52,8 @@ enum SaveButtonDrawing {
         defer { context.restoreGState() }
         context.translateBy(x: face.midX, y: face.midY)
         context.scaleBy(x: scale, y: scale)
-        let text = "Save" as NSString
+        let label = "Save"
+        let text = label as NSString
         let attributes: [NSAttributedString.Key: Any] = [
             .font: BubbleGlass.captionFont, .foregroundColor: NSColor.labelColor
         ]
@@ -67,7 +68,8 @@ enum SaveButtonDrawing {
         let gap: CGFloat = symbol != nil && style == .bookmarkAndText ? 4 : 0
         let left = -(iconWidth + gap + textSize.width) / 2
         let iconHeight = symbol?.size.height ?? 0
-        let top = (iconHeight + gap + textSize.width) / 2
+        let stackedTextHeight = style == .bookmarkOnly ? 0 : CGFloat(label.count) * BubbleGlass.verticalLabelLineHeight
+        let top = (iconHeight + gap + stackedTextHeight) / 2
         if let symbol {
             let iconRect = NSRect(x: portrait ? -iconWidth / 2 : left, y: portrait ? top - iconHeight : -iconHeight / 2,
                                   width: iconWidth, height: iconHeight)
@@ -80,11 +82,12 @@ enum SaveButtonDrawing {
         }
         if style != .bookmarkOnly {
             if portrait {
-                context.translateBy(x: 0, y: top - iconHeight - gap - textSize.width / 2)
-                context.rotate(by: -.pi / 2)
+                let textBounds = NSRect(x: -naturalFace.width / 2, y: -top,
+                                        width: naturalFace.width, height: stackedTextHeight)
+                BubbleGlass.drawVerticalLabel(label, in: textBounds)
+            } else {
+                text.draw(at: NSPoint(x: left + iconWidth + gap, y: -textSize.height / 2), withAttributes: attributes)
             }
-            let x = portrait ? -textSize.width / 2 : left + iconWidth + gap
-            text.draw(at: NSPoint(x: x, y: -textSize.height / 2), withAttributes: attributes)
         }
     }
 }

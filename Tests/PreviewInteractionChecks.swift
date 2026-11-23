@@ -195,12 +195,16 @@ private extension BubblePanelController {
         let portrait = BubbleGlass.portraitCell(for: .shortCaptions)
         precondition(pills[0].frame.size == portrait && save.frame.size == portrait)
         precondition(save.orientation == .vertical && pills[0].orientation == .vertical)
+        precondition(BubbleGlass.verticalLabel("Review changes", fitting: pills[0].surface.height - 12) == "Review…")
+        precondition(BubbleGlass.verticalLabel("Save", fitting: 48) == "Save")
+        precondition(BubbleGlass.verticalLabel("修👩🏽‍💻正を確認", fitting: 36) == "修👩🏽‍💻…")
         for saveStyle in SaveButtonStyle.allCases {
             setSaveStyle(saveStyle)
             precondition(save.surface.size == pills[0].surface.size)
         }
         PreviewFixture.click(pills[0])
         precondition(card.isVisible && selectedID == items[0].id && !panel.frame.intersects(card.frame))
+        precondition(previewText.string == items[0].text)
 
         let p = pills[0].convert(NSPoint(x: pills[0].bounds.midX, y: pills[0].bounds.midY), to: nil)
         let next = NSPoint(x: p.x, y: p.y + 160)
