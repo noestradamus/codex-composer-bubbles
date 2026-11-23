@@ -57,10 +57,11 @@ private final class BubbleDropZone: NSView {
 
 private struct RowPress {
     let point: NSPoint
-    let originX: CGFloat
+    let origin: CGFloat
 
-    func offset(following pointer: NSPoint) -> CGFloat {
-        originX + point.x - pointer.x
+    func offset(following pointer: NSPoint, horizontal: Bool) -> CGFloat {
+        // Window y increases upward and the bubble document is flipped.
+        horizontal ? origin + point.x - pointer.x : origin + pointer.y - point.y
     }
 }
 
@@ -162,8 +163,8 @@ private final class BubblePill: NSButton, NSDraggingSource {
     override func mouseDown(with event: NSEvent) {
         guard fullText != nil else { super.mouseDown(with: event); return }
         highlight(true)
-        gesture = .pressed(RowPress(point: event.locationInWindow,
-                                    originX: enclosingScrollView?.contentView.bounds.minX ?? 0))
+        let row = enclosingScrollView as? BubbleScroll
+        gesture = .pressed(RowPress(point: event.locationInWindow, origin: row?.browseOffset ?? 0))
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -178,19 +179,21 @@ private final class BubblePill: NSButton, NSDraggingSource {
             let distance = hypot(dx, dy)
             guard distance >= 5 else { return }
             highlight(false)
-            if let row, row.canPan, !event.modifierFlags.contains(.option), !row.exitedVertically(at: point) {
-                if dx >= 1.25 * dy {
+            if let row, row.canPan, !event.modifierFlags.contains(.option), !row.exitedAcrossShelf(at: point) {
+                let along = row.horizontal ? dx : dy
+                let across = row.horizontal ? dy : dx
+                if along >= 1.25 * across {
                     gesture = .panning(press)
-                    row.scrollHorizontally(to: press.offset(following: point))
+                    row.browse(to: press.offset(following: point, horizontal: row.horizontal))
                     return
                 }
                 // Let a small diagonal move settle before choosing scrolling or a text drag.
-                if dy < 1.25 * dx, distance < 9 { return }
+                if across < 1.25 * along, distance < 9 { return }
             }
         case .panning(let press):
             guard let row, row.canPan else { gesture = .idle; return }
-            if !event.modifierFlags.contains(.option), !row.exitedVertically(at: point) {
-                row.scrollHorizontally(to: press.offset(following: point))
+            if !event.modifierFlags.contains(.option), !row.exitedAcrossShelf(at: point) {
+                row.browse(to: press.offset(following: point, horizontal: row.horizontal))
                 return
             }
         }
@@ -285,9 +288,13 @@ private final class BubbleScroll: NSScrollView {
     private enum WheelAxis { case x, y }
     private var gestureAxis: WheelAxis?
 
-    var canPan: Bool {
-        horizontal && (documentView?.frame.width ?? 0) > contentView.bounds.width + 0.5
+    private var viewportLength: CGFloat { horizontal ? contentView.bounds.width : contentView.bounds.height }
+    private var browseLimit: CGFloat {
+        guard let documentView else { return 0 }
+        return max(0, (horizontal ? documentView.frame.width : documentView.frame.height) - viewportLength)
     }
+    var browseOffset: CGFloat { horizontal ? contentView.bounds.minX : contentView.bounds.minY }
+    var canPan: Bool { browseLimit > 0.5 }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -325,10 +332,11 @@ private final class BubbleScroll: NSScrollView {
             x += w
         }
         // A label change or removal can shorten the document while it is scrolled.
-        scrollHorizontally(to: contentView.bounds.minX)
+        browse(to: browseOffset)
         updateBackdrops()
         window?.invalidateCursorRects(for: self)
-        setAccessibilityHelp(canPan ? "Swipe with two fingers or drag sideways to browse saved suggestions." : nil)
+        let direction = horizontal ? "sideways" : "up and down"
+        setAccessibilityHelp(canPan ? "Swipe with two fingers or drag \(direction) to browse saved suggestions." : nil)
     }
 
     @objc private func displayOptionsChanged() {
@@ -336,9 +344,10 @@ private final class BubbleScroll: NSScrollView {
         buttons.forEach { $0.needsDisplay = true }
     }
 
-    func exitedVertically(at windowPoint: NSPoint) -> Bool {
-        let y = convert(windowPoint, from: nil).y
-        return y < bounds.minY - 8 || y > bounds.maxY + 8
+    func exitedAcrossShelf(at windowPoint: NSPoint) -> Bool {
+        let point = convert(windowPoint, from: nil)
+        if horizontal { return point.y < bounds.minY - 8 || point.y > bounds.maxY + 8 }
+        return point.x < bounds.minX - 8 || point.x > bounds.maxX + 8
     }
 
     func visibleSurface(of pill: BubblePill) -> NSRect {
@@ -347,44 +356,52 @@ private final class BubbleScroll: NSScrollView {
         return face.intersection(contentView.documentVisibleRect)
     }
 
-    func scrollHorizontally(to requested: CGFloat) {
-        guard horizontal, let documentView else { return }
+    func browse(to requested: CGFloat) {
+        guard documentView != nil else { return }
+        let offset = min(browseLimit, max(0, requested))
+        guard offset != browseOffset else { return }
         let clip = contentView
-        let limit = max(0, documentView.frame.width - clip.bounds.width)
-        let x = min(limit, max(0, requested))
-        if x != clip.bounds.minX {
-            clip.scroll(to: NSPoint(x: x, y: clip.bounds.minY))
-            reflectScrolledClipView(clip)
-        }
+        clip.scroll(to: horizontal ? NSPoint(x: offset, y: clip.bounds.minY) : NSPoint(x: clip.bounds.minX, y: offset))
+        reflectScrolledClipView(clip)
     }
 
     override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
-        guard canPan, let documentView else { return super.accessibilityCustomActions() }
+        guard canPan else { return super.accessibilityCustomActions() }
         var actions = super.accessibilityCustomActions() ?? []
-        if contentView.bounds.minX > 0 {
-            actions.append(NSAccessibilityCustomAction(name: "Scroll left", target: self, selector: #selector(pageLeft)))
+        if browseOffset > 0 {
+            actions.append(NSAccessibilityCustomAction(name: horizontal ? "Scroll left" : "Scroll up",
+                                                       target: self, selector: #selector(pageBackward)))
         }
-        if contentView.bounds.maxX < documentView.frame.width {
-            actions.append(NSAccessibilityCustomAction(name: "Scroll right", target: self, selector: #selector(pageRight)))
+        if browseOffset < browseLimit {
+            actions.append(NSAccessibilityCustomAction(name: horizontal ? "Scroll right" : "Scroll down",
+                                                       target: self, selector: #selector(pageForward)))
         }
         return actions
     }
 
-    @objc private func pageLeft() -> Bool { page(by: -contentView.bounds.width) }
-    @objc private func pageRight() -> Bool { page(by: contentView.bounds.width) }
+    @objc private func pageBackward() -> Bool { page(by: -viewportLength) }
+    @objc private func pageForward() -> Bool { page(by: viewportLength) }
 
     private func page(by distance: CGFloat) -> Bool {
-        let previous = contentView.bounds.minX
-        scrollHorizontally(to: previous + distance)
-        return contentView.bounds.minX != previous
+        let previous = browseOffset
+        browse(to: previous + distance)
+        return browseOffset != previous
     }
 
     override func moveLeft(_ sender: Any?) {
-        if canPan { _ = pageLeft() } else { super.moveLeft(sender) }
+        if horizontal && canPan { _ = pageBackward() } else { super.moveLeft(sender) }
     }
 
     override func moveRight(_ sender: Any?) {
-        if canPan { _ = pageRight() } else { super.moveRight(sender) }
+        if horizontal && canPan { _ = pageForward() } else { super.moveRight(sender) }
+    }
+
+    override func moveUp(_ sender: Any?) {
+        if !horizontal && canPan { _ = pageBackward() } else { super.moveUp(sender) }
+    }
+
+    override func moveDown(_ sender: Any?) {
+        if !horizontal && canPan { _ = pageForward() } else { super.moveDown(sender) }
     }
 
     override func resetCursorRects() {
@@ -405,12 +422,12 @@ private final class BubbleScroll: NSScrollView {
 
     override func mouseDown(with event: NSEvent) {
         guard canPan else { super.mouseDown(with: event); return }
-        backgroundPress = RowPress(point: event.locationInWindow, originX: contentView.bounds.minX)
+        backgroundPress = RowPress(point: event.locationInWindow, origin: browseOffset)
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard let backgroundPress else { super.mouseDragged(with: event); return }
-        scrollHorizontally(to: backgroundPress.offset(following: event.locationInWindow))
+        browse(to: backgroundPress.offset(following: event.locationInWindow, horizontal: horizontal))
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -450,7 +467,7 @@ private final class BubbleScroll: NSScrollView {
     }
 
     override func scrollWheel(with event: NSEvent) {
-        guard canPan else {
+        guard horizontal && canPan else {
             gestureAxis = nil
             super.scrollWheel(with: event)
             return
@@ -464,7 +481,7 @@ private final class BubbleScroll: NSScrollView {
             if phased, max(abs(dx), abs(dy)) >= 1 { gestureAxis = axis }
             let delta = axis == .x ? dx : dy
             let scale: CGFloat = event.hasPreciseScrollingDeltas ? 1 : horizontalLineScroll
-            scrollHorizontally(to: contentView.bounds.minX - delta * scale)
+            browse(to: browseOffset - delta * scale)
         }
         if event.phase.contains(.cancelled) || event.momentumPhase.contains(.ended) ||
             event.momentumPhase.contains(.cancelled) { gestureAxis = nil }
@@ -656,14 +673,17 @@ private final class LinkedBubbleWindow: NSWindow {
     private var orbs: [BubblePill] = []
     private var selected: BubblePill?
     private var style: BubbleStyle
+    private var orientation: ShelfOrientation
     private var expansionAbove: CGFloat = 0
     private var layingOutSnapshot = false
     private var dragging = false
     private var dismissed = false
 
     init(items: [SavedBubble], near anchor: NSRect, on screen: NSRect, style: BubbleStyle = .shortCaptions,
+         orientation: ShelfOrientation = .horizontal,
          undoID: UUID?, onRemove: @escaping (UUID) -> Bool, onUndo: @escaping (UUID) -> SavedBubble?) {
         self.style = style
+        self.orientation = orientation
         self.initialScreen = screen
         self.undoID = undoID
         self.onRemove = onRemove
@@ -694,7 +714,8 @@ private final class LinkedBubbleWindow: NSWindow {
         undo.action = #selector(undoRemoval)
         content.addSubview(undo)
 
-        list.horizontal = true
+        list.horizontal = orientation == .horizontal
+        list.hasVerticalScroller = !list.horizontal
         list.scrollerStyle = .overlay
         list.autohidesScrollers = true
         list.setAccessibilityLabel("Bubbles saved in this chat")
@@ -784,7 +805,9 @@ private final class LinkedBubbleWindow: NSWindow {
         let top = frame.maxY - expansionAbove
         let width = contentRect(forFrameRect: frame).width
         let row = BubbleGlass.rowHeight
-        let collapsed = items.isEmpty ? CGFloat(56) : 45 + row
+        let rows = orientation == .vertical ? min(items.count, ShelfPlacement.maximumColumnRows) : 1
+        let listHeight = row * CGFloat(rows)
+        let collapsed = items.isEmpty ? CGFloat(56) : 45 + listHeight
         let baseHeight = frameRect(forContentRect: NSRect(x: 0, y: 0, width: width, height: collapsed)).height
         let gap: CGFloat = 4
         let below = top - baseHeight - display.minY - gap
@@ -803,7 +826,7 @@ private final class LinkedBubbleWindow: NSWindow {
         undo.isHidden = undoID == nil
         undo.frame = NSRect(x: width - 53, y: hint.frame.minY, width: 41, height: 21)
         list.isHidden = items.isEmpty
-        list.frame = NSRect(x: 12, y: expansionAbove + 38, width: width - 24, height: row)
+        list.frame = NSRect(x: 12, y: expansionAbove + 38, width: width - 24, height: listHeight)
         previewSurface.isHidden = selected == nil
         if selected != nil {
             let previewY = expansionAbove > 0 ? gap : list.frame.maxY + gap
@@ -821,6 +844,21 @@ private final class LinkedBubbleWindow: NSWindow {
         orbs.forEach { $0.style = style }
         layingOutSnapshot = true
         list.layoutBubbles(orbs, centered: false)
+        if let selected { stack.scrollToVisible(selected.frame) }
+        layingOutSnapshot = false
+        closeOffscreenPreview()
+    }
+
+    func setOrientation(_ next: ShelfOrientation) {
+        guard orientation != next else { return }
+        orientation = next
+        layoutSnapshot()
+        layingOutSnapshot = true
+        list.horizontal = next == .horizontal
+        list.hasVerticalScroller = !list.horizontal
+        list.layoutBubbles(orbs, centered: false)
+        list.contentView.scroll(to: .zero)
+        list.reflectScrolledClipView(list.contentView)
         if let selected { stack.scrollToVisible(selected.frame) }
         layingOutSnapshot = false
         closeOffscreenPreview()
@@ -898,6 +936,8 @@ final class BubblePanelController {
     private let previewSurface = BubbleCallout(frame: .zero)
     private var linkedWindow: LinkedBubbleWindow?
     private var style = BubbleStyle.shortCaptions
+    private var orientation = ShelfOrientation.horizontal
+    private var measuredColumnWidth: CGFloat?
     private var incomingBubbles: [SavedBubble] = []
     private var bubbles: [SavedBubble] = []
     private var revealID: UUID?
@@ -937,7 +977,7 @@ final class BubblePanelController {
         if next == .textOnly { stopSaveConfirmation() }
         save.saveStyle = next
         updateControlMaterials()
-        if bubbles.isEmpty, let display { layout(on: display) }
+        if (bubbles.isEmpty || orientation == .vertical), let display { layout(on: display) }
     }
 
     func showSaveConfirmation() {
@@ -993,10 +1033,19 @@ final class BubblePanelController {
         style = next
         save.style = next
         pills.forEach { $0.style = next }
+        measuredColumnWidth = nil
         linkedWindow?.setStyle(next)
         if let selectedID { revealID = selectedID }
         layoutDirty = true
         if let display { layout(on: display) }
+    }
+
+    func setOrientation(_ next: ShelfOrientation) {
+        guard orientation != next else { return }
+        orientation = next
+        linkedWindow?.setOrientation(next)
+        if let selectedID { revealID = selectedID }
+        layoutDirty = true
     }
 
     @objc private func openSettings() { onSettings?() }
@@ -1007,7 +1056,8 @@ final class BubblePanelController {
         guard let visible = screen.isEmpty ? NSScreen.main?.visibleFrame : screen else { return }
         hide()
         let window = LinkedBubbleWindow(items: items, near: panel.frame.isEmpty ? anchor : panel.frame, on: visible,
-                                        style: style, undoID: undoID, onRemove: onRemove, onUndo: onUndo)
+                                        style: style, orientation: orientation, undoID: undoID,
+                                        onRemove: onRemove, onUndo: onUndo)
         linkedWindow = window
         window.onDismiss = { [weak self, weak window] in
             if self?.linkedWindow === window { self?.linkedWindow = nil }
@@ -1138,7 +1188,7 @@ final class BubblePanelController {
                                         anchor: anchor, count: bubbles.count, realAnchor: realAnchor)
         placement = result.placement
         layoutRoom = result.placement.visibleRoom(on: result.display, host: host, window: self.hostFrame,
-                                                  count: bubbles.count, saveWidth: saveWidth,
+                                                  count: bubbles.count, saveWidth: saveWidth, columnWidth: columnWidth,
                                                   avoiding: occupied, occludedBy: windows)
         guard layoutRoom != nil else { hide(); return }
         layout(on: result.display)
@@ -1186,6 +1236,7 @@ final class BubblePanelController {
         }
         existing.values.forEach { $0.pill.removeFromSuperview() }
         bubbles = next
+        measuredColumnWidth = nil
         layoutDirty = true
     }
 
@@ -1197,14 +1248,25 @@ final class BubblePanelController {
     }
 
     private var saveWidth: CGFloat {
-        bubbles.isEmpty ? SaveButtonDrawing.size(for: save.saveStyle, bubbleStyle: style).width : SaveButtonDrawing.reservedWidth
+        if bubbles.isEmpty || orientation == .vertical {
+            return SaveButtonDrawing.size(for: save.saveStyle, bubbleStyle: style).width
+        }
+        return SaveButtonDrawing.reservedWidth
+    }
+
+    private var columnWidth: CGFloat? {
+        guard orientation == .vertical else { return nil }
+        if let measuredColumnWidth { return measuredColumnWidth }
+        let width = pills.reduce(CGFloat(0)) { max($0, $1.preferredCellSize.width) }
+        measuredColumnWidth = width
+        return width
     }
 
     private func layout(on display: ShelfDisplay) {
         guard let placement else { return }
         let room = layoutRoom ?? placement.layoutDisplay(display, host: hostDisplay, window: hostFrame).visibleFrame
         let geometry = placement.layout(displayFrame: display.frame, visibleFrame: room,
-                                        count: bubbles.count, emptySaveWidth: saveWidth)
+                                        count: bubbles.count, emptySaveWidth: saveWidth, columnWidth: columnWidth)
         let displayChanged = self.display != display
         self.display = display
         screen = display.visibleFrame
@@ -1346,29 +1408,44 @@ final class BubblePanelController {
         let pointerHeight: CGFloat = 7
         let height = min(max(39, metrics.textHeight + 15 + bottomInset) + pointerHeight,
                          min(260, screen.height - 8))
+        let vertical = orientation == .vertical && lastLayout?.horizontal == false
         let targetRect: NSRect
         if let selectedID, let index = bubbles.firstIndex(where: { $0.id == selectedID }) {
             let surface = visibleSurface(of: pills[index])
             guard !surface.isEmpty else { closePreview(); return }
             let visible = document.convert(surface, to: nil)
             let row = pills[index].convert(pills[index].bounds, to: nil)
-            targetRect = NSRect(x: visible.minX, y: row.minY, width: visible.width, height: row.height)
+            targetRect = vertical ? visible : NSRect(x: visible.minX, y: row.minY, width: visible.width, height: row.height)
         } else { targetRect = save.convert(save.bounds, to: nil) }
         let targetFrame = panel.convertToScreen(targetRect)
-        let roomAbove = screen.maxY - targetFrame.maxY, roomBelow = targetFrame.minY - screen.minY
-        let above = roomAbove >= height + 6 || roomAbove >= roomBelow
-        let y = above ? targetFrame.maxY + 2 : targetFrame.minY - 2 - height
-        let frame = Self.clamped(NSRect(x: targetFrame.midX - width / 2, y: y, width: width, height: height), within: screen)
+        let roomRight = screen.maxX - panel.frame.maxX, roomLeft = panel.frame.minX - screen.minX
+        let frame: NSRect, body: NSRect, tip: NSPoint
+        if vertical && max(roomRight, roomLeft) >= width + pointerHeight + 6 {
+            let onRight = roomRight >= width + pointerHeight + 6
+            let sideHeight = height - pointerHeight
+            let x = onRight ? panel.frame.maxX + 2 : panel.frame.minX - 2 - width - pointerHeight
+            frame = Self.clamped(NSRect(x: x, y: targetFrame.midY - sideHeight / 2,
+                                        width: width + pointerHeight, height: sideHeight), within: screen)
+            body = NSRect(x: onRight ? pointerHeight : 0, y: 0, width: width, height: sideHeight)
+            let tipY = min(max(20, targetFrame.midY - frame.minY), sideHeight - 20)
+            tip = NSPoint(x: onRight ? 1 : frame.width - 1, y: tipY)
+        } else {
+            let roomAbove = screen.maxY - targetFrame.maxY, roomBelow = targetFrame.minY - screen.minY
+            let above = roomAbove >= height + 6 || roomAbove >= roomBelow
+            let y = above ? targetFrame.maxY + 2 : targetFrame.minY - 2 - height
+            frame = Self.clamped(NSRect(x: targetFrame.midX - width / 2, y: y, width: width, height: height), within: screen)
+            body = NSRect(x: 0, y: above ? pointerHeight : 0, width: width, height: height - pointerHeight)
+            let tipX = min(max(28, targetFrame.midX - frame.minX), width - 28)
+            tip = NSPoint(x: tipX, y: above ? 1 : height - 1)
+        }
         if card.frame.size != frame.size { card.setFrame(frame, display: false) }
         else if card.frame.origin != frame.origin { card.setFrameOrigin(frame.origin) }
-        let body = NSRect(x: 0, y: above ? pointerHeight : 0, width: width, height: height - pointerHeight)
-        let tipX = min(max(28, targetFrame.midX - frame.minX), width - 28)
-        previewSurface.shape(body: body, tip: NSPoint(x: tipX, y: above ? 1 : height - 1))
-        let textFrame = NSRect(x: sideInset, y: body.minY + bottomInset, width: textWidth,
+        previewSurface.shape(body: body, tip: tip)
+        let textFrame = NSRect(x: body.minX + sideInset, y: body.minY + bottomInset, width: textWidth,
                                height: max(10, body.height - 13 - bottomInset))
         if textScroll.frame != textFrame { textScroll.frame = textFrame }
         textScroll.fitDocument()
-        remove.frame = NSRect(x: 12, y: body.minY + 6, width: 61, height: 21)
-        cancelLink.frame = NSRect(x: 12, y: body.minY + 6, width: 43, height: 21)
+        remove.frame = NSRect(x: body.minX + 12, y: body.minY + 6, width: 61, height: 21)
+        cancelLink.frame = NSRect(x: body.minX + 12, y: body.minY + 6, width: 43, height: 21)
     }
 }

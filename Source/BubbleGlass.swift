@@ -91,17 +91,24 @@ enum BubbleGlass {
     static func contour(of rect: NSRect, tip: CGPoint? = nil) -> CGPath {
         let outline = RoundedRectangle(cornerRadius: cornerRadius(for: rect), style: .continuous).path(in: rect).cgPath
         guard let tip else { return outline }
-        let below = tip.y < rect.midY
-        let y = below ? rect.minY : rect.maxY
+        // Build side pointers by swapping the axes of the same contour.
+        let side = tip.x < rect.minX || tip.x > rect.maxX
+        let point = side ? CGPoint(x: tip.y, y: tip.x) : tip
+        let below = side ? tip.x < rect.midX : tip.y < rect.midY
+        let y = side ? (below ? rect.minX : rect.maxX) : (below ? rect.minY : rect.maxY)
         let inside = below ? y + 2 : y - 2
         let tail = CGMutablePath()
-        tail.move(to: CGPoint(x: tip.x - 11, y: inside))
-        tail.addLine(to: CGPoint(x: tip.x - 11, y: y))
-        tail.addCurve(to: tip, control1: CGPoint(x: tip.x - 5, y: y), control2: CGPoint(x: tip.x - 3, y: tip.y))
-        tail.addCurve(to: CGPoint(x: tip.x + 11, y: y), control1: CGPoint(x: tip.x + 3, y: tip.y),
-                      control2: CGPoint(x: tip.x + 5, y: y))
-        tail.addLine(to: CGPoint(x: tip.x + 11, y: inside))
+        tail.move(to: CGPoint(x: point.x - 11, y: inside))
+        tail.addLine(to: CGPoint(x: point.x - 11, y: y))
+        tail.addCurve(to: point, control1: CGPoint(x: point.x - 5, y: y), control2: CGPoint(x: point.x - 3, y: point.y))
+        tail.addCurve(to: CGPoint(x: point.x + 11, y: y), control1: CGPoint(x: point.x + 3, y: point.y),
+                      control2: CGPoint(x: point.x + 5, y: y))
+        tail.addLine(to: CGPoint(x: point.x + 11, y: inside))
         tail.closeSubpath()
+        if side {
+            var swap = CGAffineTransform(a: 0, b: 1, c: 1, d: 0, tx: 0, ty: 0)
+            return tail.copy(using: &swap).map { outline.union($0) } ?? outline
+        }
         return outline.union(tail)
     }
 
@@ -135,8 +142,12 @@ enum BubbleGlass {
             // Let the painted rim follow the pointer, without a second straight
             // edge across the opening where the pointer joins the reading surface.
             rim.pointerOpening = tip.map { point in
-                NSRect(x: point.x - face.minX - 11, y: point.y < face.midY ? -1 : face.height - 3,
-                       width: 22, height: 4)
+                if point.x < face.minX || point.x > face.maxX {
+                    return NSRect(x: point.x < face.midX ? -1 : face.width - 3, y: point.y - face.minY - 11,
+                                  width: 4, height: 22)
+                }
+                return NSRect(x: point.x - face.minX - 11, y: point.y < face.midY ? -1 : face.height - 3,
+                              width: 22, height: 4)
             }
         }
         #endif

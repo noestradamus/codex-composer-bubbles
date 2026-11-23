@@ -1,5 +1,20 @@
 import Foundation
 
+enum ShelfOrientation: String, CaseIterable {
+    case horizontal
+    case vertical
+
+    var title: String { self == .horizontal ? "Horizontal" : "Vertical" }
+
+    static func load(from defaults: UserDefaults) -> Self {
+        defaults.string(forKey: "shelfOrientation").flatMap(Self.init(rawValue:)) ?? .horizontal
+    }
+
+    func save(to defaults: UserDefaults) {
+        defaults.set(rawValue, forKey: "shelfOrientation")
+    }
+}
+
 enum BubbleStyle: String, CaseIterable {
     case shortCaptions
     case numbers

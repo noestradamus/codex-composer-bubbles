@@ -39,13 +39,15 @@ To update a local build, quit Composer Bubbles, pull the latest source into the 
 1. In Codex, press **Tab** to accept a composer prediction into the draft.
 2. Click **Save** on the floating shelf, or press **⌘⌥⇧B**. Composer Bubbles copies the text into this chat’s shelf. The draft stays editable, so you can keep typing or replace it with your next prompt. You can also drag selected text onto **Save**, or copy it and choose **Save Copied Text as Bubble** from the menu bar.
 3. Click a bubble to preview the entire suggestion. Click it again to close the preview. Drag the bubble into the composer to restore it as an editable draft. The bubble stays available for reuse.
-4. If the row overflows, swipe with two fingers or drag sideways across a bubble or a gap. Hold **Option** to drag a bubble’s text in any direction.
+4. If the shelf fills up, swipe with two fingers or drag along the shelf to browse. Hold **Option** to drag a bubble’s text in any direction.
 
 If Codex hides the chat ID, the companion can ask you to link the chat. Follow the card and press **⌘⌥L** in Codex, or use your custom shortcut for **Copy chat deep link**. For help with chat detection, one-click capture, and recovering older bubbles, see the [usage guide](docs/usage.md).
 
 ## Appearance and placement
 
 Right-click **Save** and choose **Settings…**. Choose short captions or per-chat numbers for the bubbles. The Save control can show a bookmark, text, or both. The shelf uses native clear glass on macOS 26 and later, and supports the system’s **Reduce transparency** setting.
+
+Set **Shelf orientation** to **Vertical** for a column of bubbles with **Save** beside the move tab. Swipe or drag up and down to browse. Drag a bubble sideways toward the composer to restore it.
 
 While Codex is active, each visible chat window has its own shelf. With a chat window on each display, both shelves stay visible. Each shows suggestions for the chat in its own window. Click **Save** on the window whose draft you want to keep. The keyboard shortcut uses the focused window.
 

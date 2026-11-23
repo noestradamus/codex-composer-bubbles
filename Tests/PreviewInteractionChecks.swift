@@ -166,6 +166,65 @@ private extension BubblePanelController {
         retire()
         print("Passed interrupted shelf move, original pin recovery and subsequent normal move.")
     }
+
+    func verifyVerticalShelf(on screen: CGRect) {
+        let anchor = CGRect(x: screen.midX - 155, y: screen.midY - 110, width: 460, height: 55)
+        let items = (1...14).map { (number: Int) in
+            SavedBubble(text: "Review test \(number) and check the exact text. 修正 👩🏽‍💻", chatKey: "test", number: number)
+        }
+        func present(_ items: [SavedBubble]) {
+            show(bubbles: items, anchor: anchor, screen: screen, hostFrame: screen)
+        }
+        func pressEvent(_ type: NSEvent.EventType, at point: NSPoint) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+                               windowNumber: panel.windowNumber, context: nil, eventNumber: 1,
+                               clickCount: 1, pressure: 1)!
+        }
+        present(items)
+        let tab = panel.convertToScreen(move.frame)
+        setOrientation(.vertical)
+        present(items)
+        precondition(!scroll.horizontal && scroll.canPan && panel.convertToScreen(move.frame) == tab)
+        precondition(pills[1].frame.minY > pills[0].frame.minY && pills[1].frame.midX == pills[0].frame.midX)
+        PreviewFixture.click(pills[0])
+        precondition(card.isVisible && selectedID == items[0].id && !panel.frame.intersects(card.frame))
+
+        let p = pills[0].convert(NSPoint(x: pills[0].bounds.midX, y: pills[0].bounds.midY), to: nil)
+        let next = NSPoint(x: p.x, y: p.y + 160)
+        pills[0].mouseDown(with: pressEvent(.leftMouseDown, at: p))
+        pills[0].mouseDragged(with: pressEvent(.leftMouseDragged, at: next))
+        pills[0].mouseUp(with: pressEvent(.leftMouseUp, at: next))
+        precondition(scroll.browseOffset > 100 && selectedID == nil && !card.isVisible)
+
+        let before = scroll.browseOffset
+        let wheel = CGEvent(scrollWheelEvent2Source: nil, units: .pixel,
+                            wheelCount: 1, wheel1: -76, wheel2: 0, wheel3: 0)!
+        scroll.scrollWheel(with: NSEvent(cgEvent: wheel)!)
+        PreviewFixture.settle()
+        precondition(scroll.browseOffset > before, "Wheel did not move the vertical viewport")
+
+        document.scrollToVisible(pills[8].frame)
+        let pill = pills[8]
+        var triedExport = false
+        pill.canUse = { triedExport = true; return false }
+        let at = pill.convert(NSPoint(x: pill.bounds.midX, y: pill.bounds.midY), to: nil)
+        let sideways = NSPoint(x: at.x + 30, y: at.y)
+        pill.mouseDown(with: pressEvent(.leftMouseDown, at: at))
+        pill.mouseDragged(with: pressEvent(.leftMouseDragged, at: sideways))
+        pill.mouseUp(with: pressEvent(.leftMouseUp, at: sideways))
+        precondition(triedExport)
+        let pasted = (bubbleDragItem(items[8].text).item as? NSPasteboardItem)?.string(forType: .string)
+        precondition(pasted?.utf8.elementsEqual(items[8].text.utf8) == true)
+
+        let added = SavedBubble(text: "A new draft.", chatKey: "test", number: 15)
+        present([added] + items)
+        precondition(!scroll.visibleSurface(of: pills.last!).isEmpty)
+        setOrientation(.horizontal)
+        present([added] + items)
+        precondition(scroll.horizontal && panel.convertToScreen(move.frame) == tab)
+        retire()
+        print("Passed vertical wheel, mouse pan, sideways export, preview and newest bubble reveal.")
+    }
 }
 
 @MainActor
@@ -221,6 +280,17 @@ private extension LinkedBubbleWindow {
         precondition(removed() == lastID)
         close()
     }
+
+    func verifyVerticalLinkedShelf() {
+        precondition(!list.horizontal && list.canPan && orbs[1].frame.minY > orbs[0].frame.minY)
+        PreviewFixture.click(orbs[0])
+        precondition(selected === orbs[0])
+        list.browse(to: 280)
+        precondition(selected == nil && previewSurface.isHidden)
+        setOrientation(.horizontal)
+        precondition(list.horizontal && orbs[0].frame.minY == orbs[1].frame.minY)
+        close()
+    }
 }
 
 @main
@@ -255,6 +325,24 @@ private enum PreviewInteractionChecks {
             onRemove: { removed = $0; return true }, onUndo: { _ in nil }).verifyScrollingDismissesPreview { removed }
         print("Passed closing offscreen linked preview and removing the newly visible selection.")
         BubblePanelController().verifyInterruptedMove(on: area)
+        BubblePanelController().verifyVerticalShelf(on: area)
+        LinkedBubbleWindow(items: items, near: .zero, on: area, orientation: .vertical, undoID: nil,
+            onRemove: { _ in false }, onUndo: { _ in nil }).verifyVerticalLinkedShelf()
+        let suite = "ComposerBubbles.OrientationTest." + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var selectedOrientation: ShelfOrientation?
+        let settings = BubbleSettingsController(defaults: defaults, onChange: { _ in },
+                                                onSaveStyleChange: { _ in },
+                                                onOrientationChange: { selectedOrientation = $0 })
+        let control = settings.window!.contentView!.subviews.compactMap { $0 as? NSSegmentedControl }
+            .first { $0.accessibilityIdentifier() == "composer-bubbles.orientation-picker" }!
+        precondition(control.selectedSegment == 0 && ShelfOrientation.load(from: defaults) == .horizontal)
+        control.selectedSegment = 1
+        NSApp.sendAction(control.action!, to: control.target, from: control)
+        precondition(selectedOrientation == .vertical && ShelfOrientation.load(from: defaults) == .vertical)
+        settings.close()
+        print("Passed linked vertical layout and persistent Settings selection.")
         BubblePanelController().verifyIncrementalRows(on: area)
     }
 }

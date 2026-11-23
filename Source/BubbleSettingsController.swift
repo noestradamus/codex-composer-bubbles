@@ -17,10 +17,14 @@ private final class BubbleStylePreview: NSView {
     var saveStyle: SaveButtonStyle {
         didSet { updateMaterial() }
     }
+    var orientation: ShelfOrientation {
+        didSet { updateMaterial() }
+    }
 
-    init(style: BubbleStyle, saveStyle: SaveButtonStyle) {
+    init(style: BubbleStyle, saveStyle: SaveButtonStyle, orientation: ShelfOrientation) {
         self.style = style
         self.saveStyle = saveStyle
+        self.orientation = orientation
         super.init(frame: .zero)
         setAccessibilityElement(true)
         setAccessibilityRole(.image)
@@ -35,7 +39,7 @@ private final class BubbleStylePreview: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
-    override func accessibilityValue() -> Any? { "\(style.title), \(saveStyle.title)" }
+    override func accessibilityValue() -> Any? { "\(orientation.title), \(style.title), \(saveStyle.title)" }
 
     @objc private func updateMaterial() {
         if BubbleGlass.usesNativeBackdrop, backdrops.isEmpty {
@@ -61,6 +65,18 @@ private final class BubbleStylePreview: NSView {
         }
         let tabSize = GlassTabDrawing.controlSize
         let saveSize = SaveButtonDrawing.size(for: saveStyle, bubbleStyle: style)
+        if orientation == .vertical {
+            let totalHeight = sizes.reduce(tabSize.height + 2 + saveSize.height) { $0 + $1.height }
+            var top = bounds.midY + totalHeight / 2
+            func stack(_ size: NSSize) -> NSRect {
+                top -= size.height
+                return NSRect(origin: NSPoint(x: bounds.midX - size.width / 2, y: top), size: size)
+            }
+            let tab = stack(tabSize)
+            top -= 2
+            let save = stack(saveSize)
+            return (tab, sizes.map(stack), save)
+        }
         let tabGap: CGFloat = 4, saveGap: CGFloat = 8
         let totalWidth = sizes.reduce(tabSize.width + tabGap + saveSize.width + saveGap) { $0 + $1.width }
         var x = bounds.midX - totalWidth / 2
@@ -104,23 +120,31 @@ final class BubbleSettingsController: NSWindowController {
     private let defaults: UserDefaults
     private let onChange: (BubbleStyle) -> Void
     private let onSaveStyleChange: (SaveButtonStyle) -> Void
+    private let onOrientationChange: (ShelfOrientation) -> Void
     private let styles = BubbleStyle.allCases
     private let saveStyles = SaveButtonStyle.allCases
+    private let orientations = ShelfOrientation.allCases
     private let picker: NSSegmentedControl
     private let savePicker: NSSegmentedControl
+    private let orientationPicker: NSSegmentedControl
     private let preview: BubbleStylePreview
 
     init(defaults: UserDefaults, onChange: @escaping (BubbleStyle) -> Void,
-         onSaveStyleChange: @escaping (SaveButtonStyle) -> Void) {
+         onSaveStyleChange: @escaping (SaveButtonStyle) -> Void,
+         onOrientationChange: @escaping (ShelfOrientation) -> Void) {
         self.defaults = defaults
         self.onChange = onChange
         self.onSaveStyleChange = onSaveStyleChange
-        preview = BubbleStylePreview(style: .load(from: defaults), saveStyle: .load(from: defaults))
+        self.onOrientationChange = onOrientationChange
+        preview = BubbleStylePreview(style: .load(from: defaults), saveStyle: .load(from: defaults),
+                                     orientation: .load(from: defaults))
         picker = NSSegmentedControl(labels: BubbleStyle.allCases.map(\.title), trackingMode: .selectOne,
                                     target: nil, action: nil)
         savePicker = NSSegmentedControl(labels: SaveButtonStyle.allCases.map(\.title), trackingMode: .selectOne,
                                         target: nil, action: nil)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 430, height: 244),
+        orientationPicker = NSSegmentedControl(labels: ShelfOrientation.allCases.map(\.title), trackingMode: .selectOne,
+                                               target: nil, action: nil)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 430, height: 405),
                               styleMask: [.titled, .closable], backing: .buffered, defer: false)
         super.init(window: window)
         window.title = "Composer Bubbles Settings"
@@ -131,9 +155,11 @@ final class BubbleSettingsController: NSWindowController {
         guard let content = window.contentView else { return }
         let heading = NSTextField(labelWithString: "Bubble style")
         let saveHeading = NSTextField(labelWithString: "Save button")
+        let orientationHeading = NSTextField(labelWithString: "Shelf orientation")
         for (label, control, id, action) in [
             (heading, picker, "composer-bubbles.style-picker", #selector(selectStyle(_:))),
-            (saveHeading, savePicker, "composer-bubbles.save-style-picker", #selector(selectSaveStyle(_:)))
+            (saveHeading, savePicker, "composer-bubbles.save-style-picker", #selector(selectSaveStyle(_:))),
+            (orientationHeading, orientationPicker, "composer-bubbles.orientation-picker", #selector(selectOrientation(_:)))
         ] {
             label.font = .systemFont(ofSize: 15, weight: .semibold)
             control.setAccessibilityLabel(label.stringValue)
@@ -145,7 +171,7 @@ final class BubbleSettingsController: NSWindowController {
         let scope = NSTextField(labelWithString: "Applies to all chats on this Mac.")
         scope.textColor = .secondaryLabelColor
         scope.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        for view in [heading, picker, saveHeading, savePicker, preview, scope] {
+        for view in [heading, picker, saveHeading, savePicker, orientationHeading, orientationPicker, preview, scope] {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
         }
@@ -160,7 +186,12 @@ final class BubbleSettingsController: NSWindowController {
             savePicker.topAnchor.constraint(equalTo: saveHeading.bottomAnchor, constant: 10),
             savePicker.leadingAnchor.constraint(equalTo: picker.leadingAnchor),
             savePicker.trailingAnchor.constraint(equalTo: picker.trailingAnchor),
-            preview.topAnchor.constraint(equalTo: savePicker.bottomAnchor, constant: 6),
+            orientationHeading.leadingAnchor.constraint(equalTo: heading.leadingAnchor),
+            orientationHeading.topAnchor.constraint(equalTo: savePicker.bottomAnchor, constant: 17),
+            orientationPicker.topAnchor.constraint(equalTo: orientationHeading.bottomAnchor, constant: 10),
+            orientationPicker.leadingAnchor.constraint(equalTo: picker.leadingAnchor),
+            orientationPicker.trailingAnchor.constraint(equalTo: picker.trailingAnchor),
+            preview.topAnchor.constraint(equalTo: orientationPicker.bottomAnchor, constant: 6),
             preview.leadingAnchor.constraint(equalTo: picker.leadingAnchor),
             preview.trailingAnchor.constraint(equalTo: picker.trailingAnchor),
             preview.bottomAnchor.constraint(equalTo: scope.topAnchor, constant: -6),
@@ -198,10 +229,20 @@ final class BubbleSettingsController: NSWindowController {
         onSaveStyleChange(style)
     }
 
+    @objc private func selectOrientation(_ sender: NSSegmentedControl) {
+        guard orientations.indices.contains(sender.selectedSegment) else { return }
+        let orientation = orientations[sender.selectedSegment]
+        orientation.save(to: defaults)
+        preview.orientation = orientation
+        onOrientationChange(orientation)
+    }
+
     private func refreshFromDefaults() {
         preview.style = .load(from: defaults)
         preview.saveStyle = .load(from: defaults)
+        preview.orientation = .load(from: defaults)
         picker.selectedSegment = styles.firstIndex(of: preview.style) ?? 0
         savePicker.selectedSegment = saveStyles.firstIndex(of: preview.saveStyle) ?? 0
+        orientationPicker.selectedSegment = orientations.firstIndex(of: preview.orientation) ?? 0
     }
 }

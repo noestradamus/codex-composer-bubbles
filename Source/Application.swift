@@ -66,7 +66,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var settings = BubbleSettingsController(
         defaults: defaults,
         onChange: { [weak self] style in self?.shelves.values.forEach { $0.panel.setStyle(style) } },
-        onSaveStyleChange: { [weak self] style in self?.shelves.values.forEach { $0.panel.setSaveStyle(style) } }
+        onSaveStyleChange: { [weak self] style in self?.shelves.values.forEach { $0.panel.setSaveStyle(style) } },
+        onOrientationChange: { [weak self] orientation in
+            self?.shelves.values.forEach { $0.panel.setOrientation(orientation) }
+            self?.refresh()
+        }
     )
     private var isHidden: Bool { defaults.bool(forKey: "hideShelf") }
     private var pendingRemoval: SavedBubble?
@@ -123,6 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let shelf = WindowShelf(panel: panel)
         panel.setStyle(.load(from: defaults))
         panel.setSaveStyle(.load(from: defaults))
+        panel.setOrientation(.load(from: defaults))
         panel.onSettings = { [weak self] in self?.openSettings() }
         panel.onSave = { [weak self] in self?.saveDraft(in: id) }
         panel.onDropText = { [weak self] text in self?.saveText(text, in: id) ?? false }

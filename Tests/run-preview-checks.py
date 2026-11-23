@@ -31,7 +31,8 @@ with tempfile.TemporaryDirectory(prefix="composer-bubbles-preview-") as folder:
     unit = scratch / "PanelChecks.swift"
     unit.write_text("\n".join([panel, (tests / "PreviewInteractionChecks.swift").read_text(),
                                (tests / "IncrementalRowChecks.swift").read_text()]))
-    support = ["BubbleGlass", "BubbleStyle", "BubbleStore", "GlassTabDrawing", "SaveButtonDrawing", "ShelfPlacement"]
+    support = ["BubbleGlass", "BubbleStyle", "BubbleStore", "GlassTabDrawing", "SaveButtonDrawing",
+               "ShelfPlacement", "BubbleSettingsController"]
     binary = scratch / "checks"
     subprocess.run(["xcrun", "swiftc", "-swift-version", "5", "-O", "-parse-as-library",
                     "-module-cache-path", str(scratch / "modules"),
