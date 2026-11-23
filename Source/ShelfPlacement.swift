@@ -370,6 +370,7 @@ struct ShelfPlacement: Codable, Equatable {
     private static let laneHeight = BubbleGlass.rowHeight
     private static let idealWidth: CGFloat = 325
     static let maximumColumnRows = 5
+    static let verticalSaveGap: CGFloat = 5
 
     func layout(displayFrame: NSRect, visibleFrame: NSRect, count: Int,
                 emptySaveWidth: CGFloat = SaveButtonDrawing.reservedWidth, portraitCell: NSSize? = nil) -> ShelfLayout {
@@ -452,7 +453,8 @@ struct ShelfPlacement: Codable, Equatable {
         let tabSize = GlassTabDrawing.controlSize
         let gap: CGFloat = 2
         let lane = cell.height
-        let minimum = gap + lane + (count > 0 ? lane : 0)
+        let listGap = count > 0 ? Self.verticalSaveGap : 0
+        let minimum = gap + lane + (count > 0 ? listGap + lane : 0)
         let fullColumn = CGFloat(Self.maximumColumnRows) * lane
         let desiredListHeight = min(CGFloat(count) * lane, fullColumn)
         guard room.width >= max(tabSize.width, cell.width), room.height >= tabSize.height + minimum else { return nil }
@@ -461,7 +463,7 @@ struct ShelfPlacement: Codable, Equatable {
         var tab = CGRect(x: tabX, y: tabTop - tabSize.height, width: tabSize.width, height: tabSize.height)
         let below = tab.minY - room.minY
         let above = room.maxY - tab.maxY
-        let downward = below >= gap + lane + fullColumn || below >= above
+        let downward = below >= gap + lane + Self.verticalSaveGap + fullColumn || below >= above
         // Keep the pin whenever there is room on either side. Otherwise move
         // only the drawn controls far enough to give Save and one bubble room.
         tab.origin.y += downward ? max(0, minimum - below) : -max(0, minimum - above)
@@ -472,9 +474,10 @@ struct ShelfPlacement: Codable, Equatable {
         let save = CGRect(x: columnX,
                           y: downward ? tab.minY - gap - lane : tab.maxY + gap,
                           width: cell.width, height: lane)
-        let available = downward ? save.minY - room.minY : room.maxY - save.maxY
+        let listEdge = downward ? save.minY - listGap : save.maxY + listGap
+        let available = downward ? listEdge - room.minY : room.maxY - listEdge
         let listHeight = min(desiredListHeight, available)
-        let list = CGRect(x: columnX, y: downward ? save.minY - listHeight : save.maxY,
+        let list = CGRect(x: columnX, y: downward ? listEdge - listHeight : listEdge,
                           width: cell.width, height: listHeight)
         let controls = tab.union(save)
         let frame = count > 0 ? controls.union(list) : controls

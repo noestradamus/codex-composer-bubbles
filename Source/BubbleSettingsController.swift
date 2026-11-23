@@ -64,7 +64,7 @@ private final class BubbleStylePreview: NSView {
         let saveSize = SaveButtonDrawing.size(for: saveStyle, bubbleStyle: style, orientation: orientation)
         if orientation == .vertical {
             let tile = NSRect(x: bounds.midX - saveSize.width / 2, y: 0, width: saveSize.width, height: saveSize.height)
-            let save = tile.offsetBy(dx: 0, dy: tile.height)
+            let save = tile.offsetBy(dx: 0, dy: tile.height + ShelfPlacement.verticalSaveGap)
             let tab = NSRect(x: bounds.midX - tabSize.width / 2, y: save.maxY + 2, width: tabSize.width, height: tabSize.height)
             return (tab, [tile], save)
         }
@@ -89,7 +89,7 @@ private final class BubbleStylePreview: NSView {
         super.layout()
         if orientation == .vertical {
             let cell = BubbleGlass.portraitCell(for: style)
-            let height = GlassTabDrawing.controlSize.height + 2 + 2 * cell.height
+            let height = GlassTabDrawing.controlSize.height + 2 + ShelfPlacement.verticalSaveGap + 2 * cell.height
             let scale = min(1, max(0, bounds.height - 8) / height)
             ink.frame = NSRect(x: bounds.midX - cell.width * scale / 2, y: bounds.midY - height * scale / 2,
                                width: cell.width * scale, height: height * scale)

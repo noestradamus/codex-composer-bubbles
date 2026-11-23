@@ -160,6 +160,8 @@ enum WindowPlacementChecks {
                     if count > 0 {
                         precondition(layout.list.width == cell.width && layout.list.minX == layout.save.minX)
                         precondition(layout.list.height >= cell.height && layout.list.height <= CGFloat(min(count, 5)) * cell.height)
+                        let gap = max(layout.list.minY - layout.save.maxY, layout.save.minY - layout.list.maxY)
+                        precondition(gap == 5)
                     } else {
                         precondition(layout.list.isEmpty && layout.frame.height == cell.height + GlassTabDrawing.controlSize.height + 2)
                     }
