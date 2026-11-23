@@ -63,15 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastStatus: String?
     private let healthLog = Logger(subsystem: "local.composerbubbles.mac", category: "capture")
     private let defaults = UserDefaults.standard
-    private lazy var settings = BubbleSettingsController(
-        defaults: defaults,
-        onChange: { [weak self] style in self?.shelves.values.forEach { $0.panel.setStyle(style) } },
-        onSaveStyleChange: { [weak self] style in self?.shelves.values.forEach { $0.panel.setSaveStyle(style) } },
-        onOrientationChange: { [weak self] orientation in
-            self?.shelves.values.forEach { $0.panel.setOrientation(orientation) }
-            self?.refresh()
-        }
-    )
+    private var settings: BubbleSettingsController?
     private var isHidden: Bool { defaults.bool(forKey: "hideShelf") }
     private var pendingRemoval: SavedBubble?
     private enum LinkAction {
@@ -129,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.setSaveStyle(.load(from: defaults))
         panel.setOrientation(.load(from: defaults))
         panel.onSettings = { [weak self] in self?.openSettings() }
+        panel.onOrientationChange = { [weak self] in self?.setShelfOrientation($0) }
         panel.onSave = { [weak self] in self?.saveDraft(in: id) }
         panel.onDropText = { [weak self] text in self?.saveText(text, in: id) ?? false }
         panel.onRemove = { [weak self] bubble in self?.removeBubble(bubble, in: id) }
@@ -527,8 +520,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }
 
+    private func setShelfOrientation(_ orientation: ShelfOrientation) {
+        orientation.save(to: defaults)
+        settings?.updateOrientation(orientation)
+        shelves.values.forEach { $0.panel.setOrientation(orientation) }
+        refresh()
+    }
+
     @objc private func openSettings() {
-        settings.present()
+        if settings == nil {
+            settings = BubbleSettingsController(
+                defaults: defaults,
+                onChange: { [weak self] style in self?.shelves.values.forEach { $0.panel.setStyle(style) } },
+                onSaveStyleChange: { [weak self] style in self?.shelves.values.forEach { $0.panel.setSaveStyle(style) } },
+                onOrientationChange: { [weak self] in self?.setShelfOrientation($0) }
+            )
+        }
+        settings?.present()
     }
 
     @objc private func viewReleases() {

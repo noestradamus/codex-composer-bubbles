@@ -182,7 +182,13 @@ private extension BubblePanelController {
         }
         present(items)
         let tab = panel.convertToScreen(move.frame)
-        setOrientation(.vertical)
+        onOrientationChange = { [weak self] in self?.setOrientation($0) }
+        let point = save.convert(NSPoint(x: save.bounds.midX, y: save.bounds.midY), to: nil)
+        let menu = save.menu(for: pressEvent(.rightMouseDown, at: point))!
+        let switchLayout = menu.item(withTitle: "Switch to Vertical")!
+        precondition(menu.item(withTitle: "Settings…") != nil)
+        precondition(NSApp.sendAction(switchLayout.action!, to: switchLayout.target, from: switchLayout))
+        precondition(switchLayout.title == "Switch to Horizontal")
         present(items)
         precondition(!scroll.horizontal && scroll.canPan && panel.convertToScreen(move.frame) == tab)
         precondition(pills[1].frame.minY > pills[0].frame.minY && pills[1].frame.midX == pills[0].frame.midX)
@@ -219,11 +225,12 @@ private extension BubblePanelController {
         let added = SavedBubble(text: "A new draft.", chatKey: "test", number: 15)
         present([added] + items)
         precondition(!scroll.visibleSurface(of: pills.last!).isEmpty)
-        setOrientation(.horizontal)
+        precondition(NSApp.sendAction(switchLayout.action!, to: switchLayout.target, from: switchLayout))
+        precondition(switchLayout.title == "Switch to Vertical")
         present([added] + items)
         precondition(scroll.horizontal && panel.convertToScreen(move.frame) == tab)
         retire()
-        print("Passed vertical wheel, mouse pan, sideways export, preview and newest bubble reveal.")
+        print("Passed Save menu layout switching, vertical wheel, mouse pan, sideways export, preview and newest bubble reveal.")
     }
 }
 
@@ -332,15 +339,19 @@ private enum PreviewInteractionChecks {
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         var selectedOrientation: ShelfOrientation?
-        let settings = BubbleSettingsController(defaults: defaults, onChange: { _ in },
-                                                onSaveStyleChange: { _ in },
-                                                onOrientationChange: { selectedOrientation = $0 })
+        let settings = BubbleSettingsController(defaults: defaults, onChange: { _ in }, onSaveStyleChange: { _ in },
+                                                onOrientationChange: { orientation in
+            selectedOrientation = orientation
+            orientation.save(to: defaults)
+        })
         let control = settings.window!.contentView!.subviews.compactMap { $0 as? NSSegmentedControl }
             .first { $0.accessibilityIdentifier() == "composer-bubbles.orientation-picker" }!
         precondition(control.selectedSegment == 0 && ShelfOrientation.load(from: defaults) == .horizontal)
         control.selectedSegment = 1
         NSApp.sendAction(control.action!, to: control.target, from: control)
         precondition(selectedOrientation == .vertical && ShelfOrientation.load(from: defaults) == .vertical)
+        settings.updateOrientation(.horizontal)
+        precondition(control.selectedSegment == 0 && selectedOrientation == .vertical)
         settings.close()
         print("Passed linked vertical layout and persistent Settings selection.")
         BubblePanelController().verifyIncrementalRows(on: area)

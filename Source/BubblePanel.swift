@@ -914,6 +914,7 @@ private final class LinkedBubbleWindow: NSWindow {
 final class BubblePanelController {
     var onSave: (() -> Void)?
     var onSettings: (() -> Void)?
+    var onOrientationChange: ((ShelfOrientation) -> Void)?
     var onRemove: ((UUID) -> Void)?
     var canUseBubble: ((UUID) -> Bool)?
     var verifyPreview: ((UUID, @escaping @MainActor (Bool) -> Void) -> Void)?
@@ -925,6 +926,7 @@ final class BubblePanelController {
     private let card = FloatingBubblePanel(label: "Saved suggestion", identifier: "composer-bubbles.preview")
     private let root = BubbleDropZone(frame: .zero)
     private let save = BubblePill(title: "Save", identifier: "composer-bubbles.save")
+    private let orientationMenuItem = NSMenuItem()
     private var confirmationTask: Task<Void, Never>?
     private let move = BubbleMoveHandle()
     private let scroll = BubbleScroll(frame: .zero)
@@ -937,6 +939,7 @@ final class BubblePanelController {
     private var linkedWindow: LinkedBubbleWindow?
     private var style = BubbleStyle.shortCaptions
     private var orientation = ShelfOrientation.horizontal
+    private var alternateOrientation: ShelfOrientation { orientation == .horizontal ? .vertical : .horizontal }
     private var measuredColumnWidth: CGFloat?
     private var incomingBubbles: [SavedBubble] = []
     private var bubbles: [SavedBubble] = []
@@ -1043,12 +1046,19 @@ final class BubblePanelController {
     func setOrientation(_ next: ShelfOrientation) {
         guard orientation != next else { return }
         orientation = next
+        updateOrientationMenuTitle()
         linkedWindow?.setOrientation(next)
         if let selectedID { revealID = selectedID }
         layoutDirty = true
     }
 
     @objc private func openSettings() { onSettings?() }
+
+    @objc private func switchOrientation() { onOrientationChange?(alternateOrientation) }
+
+    private func updateOrientationMenuTitle() {
+        orientationMenuItem.title = "Switch to \(alternateOrientation.title)"
+    }
 
     func showLinkedBubbles(_ items: [SavedBubble], undoID: UUID?,
                            onRemove: @escaping (UUID) -> Bool, onUndo: @escaping (UUID) -> SavedBubble?) {
@@ -1074,7 +1084,7 @@ final class BubblePanelController {
         } else {
             hint = "Enable Composer Bubbles in macOS Accessibility settings to identify this chat."
         }
-        let help = hint + " Right-click for Settings."
+        let help = hint + " Right-click to switch layouts or open Settings."
         guard save.toolTip != help else { return }
         save.toolTip = help
         save.setAccessibilityHelp(help)
@@ -1091,11 +1101,15 @@ final class BubblePanelController {
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(updateControlMaterials),
             name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
         save.onPress = { [weak self] in self?.onSave?() }
-        let settingsMenu = NSMenu()
+        let saveMenu = NSMenu()
+        orientationMenuItem.action = #selector(switchOrientation)
+        orientationMenuItem.target = self
+        updateOrientationMenuTitle()
+        saveMenu.addItem(orientationMenuItem)
         let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: "")
         settings.target = self
-        settingsMenu.addItem(settings)
-        save.menu = settingsMenu
+        saveMenu.addItem(settings)
+        save.menu = saveMenu
         move.onMoveBegan = { [weak self] in
             guard let self else { return }
             dragStart = NSPoint(x: panel.frame.minX + move.frame.minX, y: panel.frame.minY + move.frame.maxY)

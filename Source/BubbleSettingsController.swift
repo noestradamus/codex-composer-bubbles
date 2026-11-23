@@ -231,18 +231,19 @@ final class BubbleSettingsController: NSWindowController {
 
     @objc private func selectOrientation(_ sender: NSSegmentedControl) {
         guard orientations.indices.contains(sender.selectedSegment) else { return }
-        let orientation = orientations[sender.selectedSegment]
-        orientation.save(to: defaults)
+        onOrientationChange(orientations[sender.selectedSegment])
+    }
+
+    func updateOrientation(_ orientation: ShelfOrientation) {
         preview.orientation = orientation
-        onOrientationChange(orientation)
+        orientationPicker.selectedSegment = orientations.firstIndex(of: orientation) ?? 0
     }
 
     private func refreshFromDefaults() {
         preview.style = .load(from: defaults)
         preview.saveStyle = .load(from: defaults)
-        preview.orientation = .load(from: defaults)
         picker.selectedSegment = styles.firstIndex(of: preview.style) ?? 0
         savePicker.selectedSegment = saveStyles.firstIndex(of: preview.saveStyle) ?? 0
-        orientationPicker.selectedSegment = orientations.firstIndex(of: preview.orientation) ?? 0
+        updateOrientation(.load(from: defaults))
     }
 }
