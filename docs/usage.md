@@ -17,7 +17,7 @@ Both styles use untinted Clear glass. On macOS 26 and later, bubbles use the nat
 
 Under **Save button**, choose **Bookmark + Save** (the default), **Bookmark only**, or **Text only**. Each uses the same clear glass as the saved bubbles. The preview shows both settings together. You can click, drop text onto, or right-click the Save control in any style.
 
-Right-click **Save** and choose **Switch to Vertical** or **Switch to Horizontal**. You can also change **Shelf orientation** in Settings. Vertical keeps **Save** beside the move tab and arranges bubbles in a scrollable column. Swipe or drag up and down to browse, and drag sideways out of the column to restore a bubble. The column uses the space above or below the tab so it fits on the screen.
+Right-click **Save** and choose **Switch to Vertical** or **Switch to Horizontal**. You can also change **Shelf orientation** in Settings. The vertical shelf uses tall glass bubbles and a matching Save button. Captions read down the column, while numbers and the bookmark stay upright. Swipe or drag up and down to browse, and drag sideways out of the column to restore a bubble.
 
 After a successful save, the bookmark briefly fills with the app icon’s ultramarine blue and fades back to its outline. With **Reduce Motion** enabled, it holds the blue fill briefly, then returns directly to the outline.
 

@@ -78,6 +78,15 @@ private final class BubblePill: NSButton, NSDraggingSource {
         }
     }
     var saveStyle: SaveButtonStyle = .bookmarkAndText { didSet { needsDisplay = true } }
+    var orientation: ShelfOrientation = .horizontal {
+        didSet { if orientation != oldValue { needsDisplay = true } }
+    }
+    var surface: NSRect {
+        if fullText == nil {
+            return SaveButtonDrawing.surfaceRect(in: bounds, style: saveStyle, bubbleStyle: style, orientation: orientation)
+        }
+        return BubbleGlass.surfaceRect(in: bounds, orientation: orientation)
+    }
     var saveConfirmation: CGFloat = 0 {
         didSet { if saveConfirmation != oldValue { needsDisplay = true } }
     }
@@ -150,13 +159,13 @@ private final class BubblePill: NSButton, NSDraggingSource {
         if fullText != nil {
             drawSuggestion(nativeBackdrop: glassBackdrop?.superview != nil)
         } else {
-            SaveButtonDrawing.draw(in: bounds, style: saveStyle, bubbleStyle: style, highlighted: isHighlighted,
+            SaveButtonDrawing.draw(in: bounds, style: saveStyle, bubbleStyle: style, orientation: orientation, highlighted: isHighlighted,
                                    nativeBackdrop: glassBackdrop?.superview != nil, confirmation: saveConfirmation)
         }
     }
 
     private func drawSuggestion(nativeBackdrop: Bool) {
-        BubbleGlass.draw(in: bounds, style: style, caption: title, number: number,
+        BubbleGlass.draw(in: bounds, style: style, caption: title, number: number, orientation: orientation,
                          selected: isOpen || isHighlighted, nativeBackdrop: nativeBackdrop)
     }
 
@@ -309,7 +318,7 @@ private final class BubbleScroll: NSScrollView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
-    func layoutBubbles(_ pills: [BubblePill], centered: Bool) {
+    func layoutBubbles(_ pills: [BubblePill], centered: Bool, portraitCell: NSSize? = nil) {
         guard let documentView else { return }
         backgroundPress = nil
         gestureAxis = nil
@@ -317,9 +326,9 @@ private final class BubbleScroll: NSScrollView {
         let viewportWidth = max(0, contentSize.width)
         // Keep captions at their readable widths. Compressing a nearly full
         // row to exactly the viewport used to eliminate both browsing gestures.
-        let widths = pills.map { min($0.preferredCellSize.width, viewportWidth) }
+        let widths = pills.map { min(portraitCell?.width ?? $0.preferredCellSize.width, viewportWidth) }
         let occupied = widths.reduce(0, +)
-        let row = BubbleGlass.rowHeight
+        let row = portraitCell?.height ?? BubbleGlass.rowHeight
         let width = horizontal ? max(occupied, viewportWidth) : viewportWidth
         let size = NSSize(width: width, height: horizontal ? row : row * CGFloat(pills.count))
         if documentView.frame.size != size { documentView.setFrameSize(size) }
@@ -328,6 +337,7 @@ private final class BubbleScroll: NSScrollView {
             let w = min(widths[index], width)
             let frame = NSRect(x: horizontal ? x : (width - w) / 2, y: horizontal ? 0 : CGFloat(index) * row,
                                width: w, height: row)
+            pill.orientation = portraitCell == nil ? .horizontal : .vertical
             if pill.frame != frame { pill.frame = frame }
             x += w
         }
@@ -352,7 +362,7 @@ private final class BubbleScroll: NSScrollView {
 
     func visibleSurface(of pill: BubblePill) -> NSRect {
         guard let documentView else { return .zero }
-        let face = documentView.convert(BubbleGlass.surfaceRect(in: pill.bounds), from: pill)
+        let face = documentView.convert(pill.surface, from: pill)
         return face.intersection(contentView.documentVisibleRect)
     }
 
@@ -414,7 +424,7 @@ private final class BubbleScroll: NSScrollView {
         guard canPan else { return hit }
         if hit === documentView || hit === contentView { return self }
         if let pill = hit as? BubblePill,
-           !BubbleGlass.surfaceRect(in: pill.bounds).contains(pill.convert(point, from: superview)) { return self }
+           !pill.surface.contains(pill.convert(point, from: superview)) { return self }
         return hit
     }
 
@@ -443,7 +453,7 @@ private final class BubbleScroll: NSScrollView {
         let visible: [(BubblePill, NSRect)] = BubbleGlass.usesNativeBackdrop && !viewport.isEmpty
             ? buttons.compactMap { button in
                 guard button.superview === documentView, button.frame.intersects(viewport) else { return nil }
-                let surface = documentView.convert(BubbleGlass.surfaceRect(in: button.bounds), from: button)
+                let surface = documentView.convert(button.surface, from: button)
                 return surface.intersects(viewport) ? (button, surface) : nil
             } : []
         let visibleButtons = Set(visible.map { $0.0 })
@@ -674,6 +684,7 @@ private final class LinkedBubbleWindow: NSWindow {
     private var selected: BubblePill?
     private var style: BubbleStyle
     private var orientation: ShelfOrientation
+    private var portraitCell: NSSize? { orientation == .vertical ? BubbleGlass.portraitCell(for: style) : nil }
     private var expansionAbove: CGFloat = 0
     private var layingOutSnapshot = false
     private var dragging = false
@@ -738,7 +749,7 @@ private final class LinkedBubbleWindow: NSWindow {
         setFrameOrigin(NSPoint(x: max(screen.minX + 4, min(idealX, screen.maxX - frame.width - 4)),
                                y: max(screen.minY + 4, min(idealY, screen.maxY - frame.height - 4))))
         layoutSnapshot()
-        list.layoutBubbles(orbs, centered: false)
+        list.layoutBubbles(orbs, centered: false, portraitCell: portraitCell)
         NotificationCenter.default.addObserver(self, selector: #selector(closeOffscreenPreview),
                                                name: NSView.boundsDidChangeNotification, object: list.contentView)
         NotificationCenter.default.addObserver(self, selector: #selector(deactivated),
@@ -783,7 +794,7 @@ private final class LinkedBubbleWindow: NSWindow {
         items.remove(at: index)
         orbs.remove(at: index).removeFromSuperview()
         select(nil)
-        list.layoutBubbles(orbs, centered: false)
+        list.layoutBubbles(orbs, centered: false, portraitCell: portraitCell)
     }
 
     @objc private func undoRemoval() {
@@ -794,7 +805,7 @@ private final class LinkedBubbleWindow: NSWindow {
             insert(restored, at: index)
         }
         select(nil)
-        list.layoutBubbles(orbs, centered: false)
+        list.layoutBubbles(orbs, centered: false, portraitCell: portraitCell)
         if let index = items.firstIndex(where: { $0.id == restored.id }) { stack.scrollToVisible(orbs[index].frame) }
     }
 
@@ -804,9 +815,11 @@ private final class LinkedBubbleWindow: NSWindow {
         let display = screen?.visibleFrame ?? initialScreen
         let top = frame.maxY - expansionAbove
         let width = contentRect(forFrameRect: frame).width
-        let row = BubbleGlass.rowHeight
-        let rows = orientation == .vertical ? min(items.count, ShelfPlacement.maximumColumnRows) : 1
-        let listHeight = row * CGFloat(rows)
+        let row = portraitCell?.height ?? BubbleGlass.rowHeight
+        let rows = portraitCell == nil ? 1 : min(items.count, ShelfPlacement.maximumColumnRows)
+        let titleHeight = frame.height - contentRect(forFrameRect: frame).height
+        let usableHeight = max(row, display.height - titleHeight - 45 - 112 - 8)
+        let listHeight = min(row * CGFloat(rows), usableHeight)
         let collapsed = items.isEmpty ? CGFloat(56) : 45 + listHeight
         let baseHeight = frameRect(forContentRect: NSRect(x: 0, y: 0, width: width, height: collapsed)).height
         let gap: CGFloat = 4
@@ -842,8 +855,9 @@ private final class LinkedBubbleWindow: NSWindow {
     func setStyle(_ style: BubbleStyle) {
         self.style = style
         orbs.forEach { $0.style = style }
+        layoutSnapshot()
         layingOutSnapshot = true
-        list.layoutBubbles(orbs, centered: false)
+        list.layoutBubbles(orbs, centered: false, portraitCell: portraitCell)
         if let selected { stack.scrollToVisible(selected.frame) }
         layingOutSnapshot = false
         closeOffscreenPreview()
@@ -856,7 +870,7 @@ private final class LinkedBubbleWindow: NSWindow {
         layingOutSnapshot = true
         list.horizontal = next == .horizontal
         list.hasVerticalScroller = !list.horizontal
-        list.layoutBubbles(orbs, centered: false)
+        list.layoutBubbles(orbs, centered: false, portraitCell: portraitCell)
         list.contentView.scroll(to: .zero)
         list.reflectScrolledClipView(list.contentView)
         if let selected { stack.scrollToVisible(selected.frame) }
@@ -940,7 +954,7 @@ final class BubblePanelController {
     private var style = BubbleStyle.shortCaptions
     private var orientation = ShelfOrientation.horizontal
     private var alternateOrientation: ShelfOrientation { orientation == .horizontal ? .vertical : .horizontal }
-    private var measuredColumnWidth: CGFloat?
+    private var portraitCell: NSSize? { orientation == .vertical ? BubbleGlass.portraitCell(for: style) : nil }
     private var incomingBubbles: [SavedBubble] = []
     private var bubbles: [SavedBubble] = []
     private var revealID: UUID?
@@ -1012,8 +1026,7 @@ final class BubblePanelController {
     }
 
     @objc private func updateControlMaterials() {
-        save.glassBackdrop = backdrop(under: save, current: save.glassBackdrop,
-                                      surface: SaveButtonDrawing.surfaceRect(in: save.bounds, style: save.saveStyle, bubbleStyle: style))
+        save.glassBackdrop = backdrop(under: save, current: save.glassBackdrop, surface: save.surface)
         move.glassBackdrop = backdrop(under: move, current: move.glassBackdrop,
                                       surface: GlassTabDrawing.surfaceRect(in: move.bounds))
     }
@@ -1036,7 +1049,6 @@ final class BubblePanelController {
         style = next
         save.style = next
         pills.forEach { $0.style = next }
-        measuredColumnWidth = nil
         linkedWindow?.setStyle(next)
         if let selectedID { revealID = selectedID }
         layoutDirty = true
@@ -1202,7 +1214,7 @@ final class BubblePanelController {
                                         anchor: anchor, count: bubbles.count, realAnchor: realAnchor)
         placement = result.placement
         layoutRoom = result.placement.visibleRoom(on: result.display, host: host, window: self.hostFrame,
-                                                  count: bubbles.count, saveWidth: saveWidth, columnWidth: columnWidth,
+                                                  count: bubbles.count, saveWidth: saveWidth, portraitCell: portraitCell,
                                                   avoiding: occupied, occludedBy: windows)
         guard layoutRoom != nil else { hide(); return }
         layout(on: result.display)
@@ -1250,7 +1262,6 @@ final class BubblePanelController {
         }
         existing.values.forEach { $0.pill.removeFromSuperview() }
         bubbles = next
-        measuredColumnWidth = nil
         layoutDirty = true
     }
 
@@ -1262,25 +1273,17 @@ final class BubblePanelController {
     }
 
     private var saveWidth: CGFloat {
-        if bubbles.isEmpty || orientation == .vertical {
+        if bubbles.isEmpty {
             return SaveButtonDrawing.size(for: save.saveStyle, bubbleStyle: style).width
         }
         return SaveButtonDrawing.reservedWidth
-    }
-
-    private var columnWidth: CGFloat? {
-        guard orientation == .vertical else { return nil }
-        if let measuredColumnWidth { return measuredColumnWidth }
-        let width = pills.reduce(CGFloat(0)) { max($0, $1.preferredCellSize.width) }
-        measuredColumnWidth = width
-        return width
     }
 
     private func layout(on display: ShelfDisplay) {
         guard let placement else { return }
         let room = layoutRoom ?? placement.layoutDisplay(display, host: hostDisplay, window: hostFrame).visibleFrame
         let geometry = placement.layout(displayFrame: display.frame, visibleFrame: room,
-                                        count: bubbles.count, emptySaveWidth: saveWidth, columnWidth: columnWidth)
+                                        count: bubbles.count, emptySaveWidth: saveWidth, portraitCell: portraitCell)
         let displayChanged = self.display != display
         self.display = display
         screen = display.visibleFrame
@@ -1301,15 +1304,17 @@ final class BubblePanelController {
 
     private func layoutPills(_ geometry: ShelfLayout) {
         let horizontal = geometry.horizontal
-        let orientationChanged = lastLayout?.horizontal != horizontal
+        let orientationChanged = lastLayout?.horizontal != horizontal || lastLayout?.controlOrientation != geometry.controlOrientation
         move.frame = geometry.header
+        save.orientation = geometry.controlOrientation
         save.frame = geometry.save
         updateControlMaterials()
         scroll.horizontal = horizontal
         scroll.hasVerticalScroller = !horizontal
         scroll.isHidden = pills.isEmpty
         scroll.frame = geometry.list
-        scroll.layoutBubbles(pills, centered: true)
+        let cell = geometry.controlOrientation == .vertical ? portraitCell : nil
+        scroll.layoutBubbles(pills, centered: true, portraitCell: cell)
         if orientationChanged || resetScroll {
             scroll.contentView.scroll(to: .zero)
             scroll.reflectScrolledClipView(scroll.contentView)

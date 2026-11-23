@@ -59,23 +59,17 @@ private final class BubbleStylePreview: NSView {
         ink.needsDisplay = true
     }
 
-    private func frames() -> (tab: NSRect, tiles: [NSRect], save: NSRect) {
+    private func frames(in bounds: NSRect) -> (tab: NSRect, tiles: [NSRect], save: NSRect) {
+        let tabSize = GlassTabDrawing.controlSize
+        let saveSize = SaveButtonDrawing.size(for: saveStyle, bubbleStyle: style, orientation: orientation)
+        if orientation == .vertical {
+            let tile = NSRect(x: bounds.midX - saveSize.width / 2, y: 0, width: saveSize.width, height: saveSize.height)
+            let save = tile.offsetBy(dx: 0, dy: tile.height)
+            let tab = NSRect(x: bounds.midX - tabSize.width / 2, y: save.maxY + 2, width: tabSize.width, height: tabSize.height)
+            return (tab, [tile], save)
+        }
         let sizes = examples.enumerated().map {
             BubbleGlass.cellSize(for: style, caption: $0.element, number: $0.offset + 1)
-        }
-        let tabSize = GlassTabDrawing.controlSize
-        let saveSize = SaveButtonDrawing.size(for: saveStyle, bubbleStyle: style)
-        if orientation == .vertical {
-            let totalHeight = sizes.reduce(tabSize.height + 2 + saveSize.height) { $0 + $1.height }
-            var top = bounds.midY + totalHeight / 2
-            func stack(_ size: NSSize) -> NSRect {
-                top -= size.height
-                return NSRect(origin: NSPoint(x: bounds.midX - size.width / 2, y: top), size: size)
-            }
-            let tab = stack(tabSize)
-            top -= 2
-            let save = stack(saveSize)
-            return (tab, sizes.map(stack), save)
         }
         let tabGap: CGFloat = 4, saveGap: CGFloat = 8
         let totalWidth = sizes.reduce(tabSize.width + tabGap + saveSize.width + saveGap) { $0 + $1.width }
@@ -93,24 +87,35 @@ private final class BubbleStylePreview: NSView {
 
     override func layout() {
         super.layout()
-        ink.frame = bounds
-        let frames = frames()
+        if orientation == .vertical {
+            let cell = BubbleGlass.portraitCell(for: style)
+            let height = GlassTabDrawing.controlSize.height + 2 + 2 * cell.height
+            let scale = min(1, max(0, bounds.height - 8) / height)
+            ink.frame = NSRect(x: bounds.midX - cell.width * scale / 2, y: bounds.midY - height * scale / 2,
+                               width: cell.width * scale, height: height * scale)
+            ink.bounds = NSRect(x: 0, y: 0, width: cell.width, height: height)
+        } else {
+            ink.frame = bounds
+            ink.bounds = NSRect(origin: .zero, size: bounds.size)
+        }
+        let frames = frames(in: ink.bounds)
         let surfaces = [GlassTabDrawing.surfaceRect(in: frames.tab)]
-            + frames.tiles.map { BubbleGlass.surfaceRect(in: $0) }
-            + [SaveButtonDrawing.surfaceRect(in: frames.save, style: saveStyle, bubbleStyle: style)]
-        for (backdrop, surface) in zip(backdrops, surfaces) {
-            backdrop.frame = surface
+            + frames.tiles.map { BubbleGlass.surfaceRect(in: $0, orientation: orientation) }
+            + [SaveButtonDrawing.surfaceRect(in: frames.save, style: saveStyle, bubbleStyle: style, orientation: orientation)]
+        for (index, backdrop) in backdrops.enumerated() {
+            backdrop.isHidden = !surfaces.indices.contains(index)
+            if !backdrop.isHidden { backdrop.frame = convert(surfaces[index], from: ink) }
         }
     }
 
     fileprivate func drawControls() {
-        let frames = frames()
+        let frames = frames(in: ink.bounds)
         GlassTabDrawing.draw(in: frames.tab, nativeBackdrop: !backdrops.isEmpty)
         for (index, tile) in frames.tiles.enumerated() {
-            BubbleGlass.draw(in: tile, style: style, caption: examples[index], number: index + 1,
+            BubbleGlass.draw(in: tile, style: style, caption: examples[index], number: index + 1, orientation: orientation,
                              nativeBackdrop: backdrops.indices.contains(index + 1))
         }
-        SaveButtonDrawing.draw(in: frames.save, style: saveStyle, bubbleStyle: style,
+        SaveButtonDrawing.draw(in: frames.save, style: saveStyle, bubbleStyle: style, orientation: orientation,
                                nativeBackdrop: backdrops.indices.contains(frames.tiles.count + 1))
     }
 }

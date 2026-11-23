@@ -47,7 +47,7 @@ If Codex hides the chat ID, the companion can ask you to link the chat. Follow t
 
 Right-click **Save** and choose **Settings…**. Choose short captions or per-chat numbers for the bubbles. The Save control can show a bookmark, text, or both. The shelf uses native clear glass on macOS 26 and later, and supports the system’s **Reduce transparency** setting.
 
-Right-click **Save** and choose **Switch to Vertical** or **Switch to Horizontal** to change the shelf layout. The vertical layout stacks bubbles beside the move tab. Swipe or drag up and down to browse. Drag a bubble sideways toward the composer to restore it.
+Right-click **Save** and choose **Switch to Vertical** or **Switch to Horizontal** to change the shelf layout. The vertical layout uses tall, narrow bubbles and a matching Save button. Swipe or drag up and down to browse. Drag a bubble sideways toward the composer to restore it.
 
 While Codex is active, each visible chat window has its own shelf. With a chat window on each display, both shelves stay visible. Each shows suggestions for the chat in its own window. Click **Save** on the window whose draft you want to keep. The keyboard shortcut uses the focused window.
 

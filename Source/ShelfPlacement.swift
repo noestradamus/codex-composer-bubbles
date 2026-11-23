@@ -191,6 +191,7 @@ struct ShelfLayout: Equatable {
     let save: NSRect
     let list: NSRect
     let horizontal: Bool
+    var controlOrientation: ShelfOrientation = .horizontal
 }
 
 /// The saved point is the top left of the move grip, measured from the top
@@ -260,16 +261,16 @@ struct ShelfPlacement: Codable, Equatable {
     /// Constrain layout to an exposed part of the owner. Keep the original pin so
     /// uncovering the window restores the location the user chose.
     func visibleRoom(on display: ShelfDisplay, host: ShelfDisplay?, window: CGRect, count: Int,
-                     saveWidth: CGFloat, columnWidth: CGFloat? = nil,
+                     saveWidth: CGFloat, portraitCell: NSSize? = nil,
                      avoiding shelves: [CGRect], occludedBy windows: [CGRect]) -> CGRect? {
         let preferred = layoutDisplay(display, host: host, window: window).visibleFrame
         let original = layout(displayFrame: display.frame, visibleFrame: preferred,
-                              count: count, emptySaveWidth: saveWidth, columnWidth: columnWidth).frame
+                              count: count, emptySaveWidth: saveWidth, portraitCell: portraitCell).frame
         let obstacles = windows + shelves.map { $0.insetBy(dx: -2, dy: -2) }
         guard obstacles.contains(where: { !$0.intersection(original).isEmpty }) else { return preferred }
 
         let available = display.id == host?.id ? window.intersection(display.visibleFrame) : display.visibleFrame
-        let minWidth = saveWidth + 8 + (columnWidth == nil ? GlassTabDrawing.controlSize.width + 4 : 0)
+        let minWidth = min(portraitCell?.width ?? .infinity, saveWidth + GlassTabDrawing.controlSize.width + 4) + 8
         let minHeight = Self.laneHeight + 8
         var regions = [available]
         for obstacle in obstacles {
@@ -296,15 +297,21 @@ struct ShelfPlacement: Codable, Equatable {
 
         var nearest: CGRect?
         var bestDistance = CGFloat.infinity
+        var foundPortrait = false
         for region in regions {
             let candidate = layout(displayFrame: display.frame, visibleFrame: region,
-                                   count: count, emptySaveWidth: saveWidth, columnWidth: columnWidth)
-            guard candidate.save.width >= saveWidth,
-                  count == 0 || candidate.list.height >= Self.laneHeight else { continue }
+                                   count: count, emptySaveWidth: saveWidth, portraitCell: portraitCell)
+            let cell = candidate.controlOrientation == .vertical ? portraitCell : nil
+            let portrait = cell != nil
+            let minimumSaveWidth = cell?.width ?? saveWidth
+            let minimumListHeight = cell?.height ?? Self.laneHeight
+            guard candidate.save.width >= minimumSaveWidth, count == 0 || candidate.list.height >= minimumListHeight,
+                  portrait || !foundPortrait else { continue }
             let distance = hypot(candidate.frame.midX - original.midX, candidate.frame.midY - original.midY)
-            if distance < bestDistance {
+            if distance < bestDistance || (portrait && !foundPortrait) {
                 bestDistance = distance
                 nearest = region
+                foundPortrait = portrait
             }
         }
         return nearest
@@ -365,11 +372,10 @@ struct ShelfPlacement: Codable, Equatable {
     static let maximumColumnRows = 5
 
     func layout(displayFrame: NSRect, visibleFrame: NSRect, count: Int,
-                emptySaveWidth: CGFloat = SaveButtonDrawing.reservedWidth, columnWidth: CGFloat? = nil) -> ShelfLayout {
+                emptySaveWidth: CGFloat = SaveButtonDrawing.reservedWidth, portraitCell: NSSize? = nil) -> ShelfLayout {
         let pin = grip(in: displayFrame)
         let room = visibleFrame.insetBy(dx: min(4, visibleFrame.width / 4), dy: min(4, visibleFrame.height / 4))
-        if let columnWidth, let column = verticalLayout(pin: pin, room: room, count: count,
-                                                       width: columnWidth, saveWidth: emptySaveWidth) {
+        if let portraitCell, let column = verticalLayout(pin: pin, room: room, count: count, cell: portraitCell) {
             return column
         }
         let gripWidth = min(GlassTabDrawing.controlSize.width, room.width)
@@ -442,15 +448,14 @@ struct ShelfPlacement: Codable, Equatable {
                            list: count == 0 ? .zero : local(list), horizontal: isRow)
     }
 
-    private func verticalLayout(pin: NSPoint, room: NSRect, count: Int, width: CGFloat,
-                                saveWidth: CGFloat) -> ShelfLayout? {
+    private func verticalLayout(pin: NSPoint, room: NSRect, count: Int, cell: NSSize) -> ShelfLayout? {
         let tabSize = GlassTabDrawing.controlSize
         let gap: CGFloat = 2
-        let lane = Self.laneHeight
+        let lane = cell.height
         let minimum = gap + lane + (count > 0 ? lane : 0)
         let fullColumn = CGFloat(Self.maximumColumnRows) * lane
         let desiredListHeight = min(CGFloat(count) * lane, fullColumn)
-        guard room.width >= max(tabSize.width, saveWidth), room.height >= tabSize.height + minimum else { return nil }
+        guard room.width >= max(tabSize.width, cell.width), room.height >= tabSize.height + minimum else { return nil }
         let tabX = min(max(pin.x, room.minX), room.maxX - tabSize.width)
         let tabTop = min(max(pin.y, room.minY + tabSize.height), room.maxY)
         var tab = CGRect(x: tabX, y: tabTop - tabSize.height, width: tabSize.width, height: tabSize.height)
@@ -460,20 +465,21 @@ struct ShelfPlacement: Codable, Equatable {
         // Keep the pin whenever there is room on either side. Otherwise move
         // only the drawn controls far enough to give Save and one bubble room.
         tab.origin.y += downward ? max(0, minimum - below) : -max(0, minimum - above)
-        let columnWidth = min(room.width, max(saveWidth, width))
-        let columnX = min(max(tab.midX - columnWidth / 2, room.minX), room.maxX - columnWidth)
-        let saveX = min(max(tab.midX - saveWidth / 2, room.minX), room.maxX - saveWidth)
-        let save = CGRect(x: saveX,
+        // AppKit rounds the panel origin to whole points. Keep the column offset
+        // integral so switching layouts keeps the tab at its pinned position.
+        let centeredX = tab.minX - ((cell.width - tab.width) / 2).rounded()
+        let columnX = min(max(centeredX, room.minX), room.maxX - cell.width)
+        let save = CGRect(x: columnX,
                           y: downward ? tab.minY - gap - lane : tab.maxY + gap,
-                          width: saveWidth, height: lane)
+                          width: cell.width, height: lane)
         let available = downward ? save.minY - room.minY : room.maxY - save.maxY
         let listHeight = min(desiredListHeight, available)
         let list = CGRect(x: columnX, y: downward ? save.minY - listHeight : save.maxY,
-                          width: columnWidth, height: listHeight)
+                          width: cell.width, height: listHeight)
         let controls = tab.union(save)
         let frame = count > 0 ? controls.union(list) : controls
         func local(_ rect: CGRect) -> CGRect { rect.offsetBy(dx: -frame.minX, dy: -frame.minY) }
         return ShelfLayout(frame: frame, header: local(tab), save: local(save),
-                           list: count > 0 ? local(list) : .zero, horizontal: false)
+                           list: count > 0 ? local(list) : .zero, horizontal: false, controlOrientation: .vertical)
     }
 }

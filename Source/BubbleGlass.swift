@@ -52,6 +52,10 @@ private final class ClearBubbleBackdrop: NSView {
 enum BubbleGlass {
     nonisolated static let rowHeight: CGFloat = 40
 
+    nonisolated static func portraitCell(for style: BubbleStyle) -> NSSize {
+        NSSize(width: rowHeight, height: style == .shortCaptions ? 108 : 64)
+    }
+
     static func cellSize(for style: BubbleStyle, caption: String? = nil, number: Int? = nil) -> NSSize {
         let width: CGFloat
         if style == .shortCaptions, caption == nil {
@@ -83,9 +87,11 @@ enum BubbleGlass {
         return result
     }
 
-    static func surfaceRect(in bounds: NSRect) -> NSRect {
-        guard bounds.width > 7, bounds.height > 10 else { return .zero }
-        return bounds.insetBy(dx: 3.5, dy: 5)
+    static func surfaceRect(in bounds: NSRect, orientation: ShelfOrientation = .horizontal) -> NSRect {
+        let portrait = orientation == .vertical
+        let dx: CGFloat = portrait ? 5 : 3.5, dy: CGFloat = portrait ? 3.5 : 5
+        guard bounds.width > 2 * dx, bounds.height > 2 * dy else { return .zero }
+        return bounds.insetBy(dx: dx, dy: dy)
     }
 
     static func contour(of rect: NSRect, tip: CGPoint? = nil) -> CGPath {
@@ -113,7 +119,8 @@ enum BubbleGlass {
     }
 
     static func cornerRadius(for rect: NSRect) -> CGFloat {
-        min(rect.height > rowHeight ? 15 : 9, rect.height / 3)
+        let side = min(rect.width, rect.height)
+        return min(side > rowHeight ? 15 : 9, side / 3)
     }
 
     static var usesNativeBackdrop: Bool {
@@ -184,18 +191,39 @@ enum BubbleGlass {
     }
 
     static func draw(in bounds: NSRect, style: BubbleStyle, caption: String,
-                     number: Int?, selected: Bool = false, nativeBackdrop: Bool = false) {
-        let surface = surfaceRect(in: bounds)
-        guard !surface.isEmpty else { return }
+                     number: Int?, orientation: ShelfOrientation = .horizontal,
+                     selected: Bool = false, nativeBackdrop: Bool = false) {
+        let surface = surfaceRect(in: bounds, orientation: orientation)
+        guard !surface.isEmpty, let context = NSGraphicsContext.current?.cgContext else { return }
         drawSurface(in: surface, selected: selected, nativeBackdrop: nativeBackdrop)
+        context.saveGState()
+        defer { context.restoreGState() }
+        let labelRect: NSRect
+        if orientation == .vertical && style == .shortCaptions {
+            context.translateBy(x: surface.midX, y: surface.midY)
+            context.rotate(by: -.pi / 2)
+            labelRect = NSRect(x: -surface.height / 2, y: -surface.width / 2,
+                               width: surface.height, height: surface.width)
+        } else {
+            labelRect = surface
+        }
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
         paragraph.lineBreakMode = .byTruncatingTail
         let text = label(for: style, caption: caption, number: number) as NSString
         var typeface = font(for: style)
-        if style == .shortCaptions, text.size(withAttributes: [.font: typeface]).width > surface.width - 10 {
+        let uprightNumber = orientation == .vertical && style == .numbers
+        if uprightNumber {
+            let measured = text.size(withAttributes: [.font: typeface]).width
+            let room = max(1, labelRect.width - 4)
+            if measured > room {
+                let fitted = max(6, floor(typeface.pointSize * room / measured))
+                typeface = .monospacedDigitSystemFont(ofSize: fitted, weight: .medium)
+            }
+        }
+        if style == .shortCaptions, text.size(withAttributes: [.font: typeface]).width > labelRect.width - 10 {
             for candidate in [NSFont.systemFont(ofSize: 12, weight: .medium, width: .init(rawValue: -0.1)), compactCaptionFont]
-                where text.size(withAttributes: [.font: candidate]).width <= surface.width - 10 {
+                where text.size(withAttributes: [.font: candidate]).width <= labelRect.width - 10 {
                 typeface = candidate
                 break
             }
@@ -204,8 +232,8 @@ enum BubbleGlass {
             .font: typeface, .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph
         ]
         let textSize = text.size(withAttributes: attributes)
-        let padding = min(11, max(5, floor((surface.width - textSize.width) / 2)))
-        let available = surface.insetBy(dx: padding, dy: 0)
+        let padding = uprightNumber ? 2 : min(11, max(5, floor((labelRect.width - textSize.width) / 2)))
+        let available = labelRect.insetBy(dx: padding, dy: 0)
         guard available.width > 0 else { return }
         let height = ceil(textSize.height)
         text.draw(in: NSRect(x: available.minX, y: available.midY - height / 2,

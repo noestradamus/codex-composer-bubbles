@@ -18,7 +18,9 @@ enum SaveButtonDrawing {
         return 1 - smoothstep((elapsed - confirmationHoldUntil) / (confirmationDuration - confirmationHoldUntil))
     }
 
-    static func size(for style: SaveButtonStyle, bubbleStyle: BubbleStyle = .shortCaptions) -> NSSize {
+    static func size(for style: SaveButtonStyle, bubbleStyle: BubbleStyle = .shortCaptions,
+                     orientation: ShelfOrientation = .horizontal) -> NSSize {
+        if orientation == .vertical { return BubbleGlass.portraitCell(for: bubbleStyle) }
         let cell = BubbleGlass.cellSize(for: bubbleStyle, caption: "Save", number: 1)
         if bubbleStyle == .shortCaptions && style == .bookmarkAndText {
             return NSSize(width: reservedWidth, height: cell.height)
@@ -26,20 +28,26 @@ enum SaveButtonDrawing {
         return cell
     }
 
-    static func surfaceRect(in bounds: NSRect, style: SaveButtonStyle, bubbleStyle: BubbleStyle = .shortCaptions) -> NSRect {
-        let size = size(for: style, bubbleStyle: bubbleStyle)
+    static func surfaceRect(in bounds: NSRect, style: SaveButtonStyle, bubbleStyle: BubbleStyle = .shortCaptions,
+                            orientation: ShelfOrientation = .horizontal) -> NSRect {
+        let size = size(for: style, bubbleStyle: bubbleStyle, orientation: orientation)
         let width = min(bounds.width, size.width), height = min(bounds.height, size.height)
         return BubbleGlass.surfaceRect(in: NSRect(x: bounds.midX - width / 2, y: bounds.midY - height / 2,
-                                                  width: width, height: height))
+                                                  width: width, height: height), orientation: orientation)
     }
 
-    static func draw(in bounds: NSRect, style: SaveButtonStyle, bubbleStyle: BubbleStyle = .shortCaptions, highlighted: Bool = false,
+    static func draw(in bounds: NSRect, style: SaveButtonStyle, bubbleStyle: BubbleStyle = .shortCaptions,
+                     orientation: ShelfOrientation = .horizontal, highlighted: Bool = false,
                      nativeBackdrop: Bool = false, confirmation: CGFloat = 0) {
-        let face = surfaceRect(in: bounds, style: style, bubbleStyle: bubbleStyle)
+        let face = surfaceRect(in: bounds, style: style, bubbleStyle: bubbleStyle, orientation: orientation)
         guard !face.isEmpty, let context = NSGraphicsContext.current?.cgContext else { return }
         BubbleGlass.drawSurface(in: face, selected: highlighted, nativeBackdrop: nativeBackdrop)
 
-        let scale = min(1, face.height / BubbleGlass.surfaceRect(in: NSRect(origin: .zero, size: size(for: style, bubbleStyle: bubbleStyle))).height)
+        let naturalSize = size(for: style, bubbleStyle: bubbleStyle, orientation: orientation)
+        let naturalFace = BubbleGlass.surfaceRect(in: NSRect(origin: .zero, size: naturalSize), orientation: orientation)
+        let portrait = orientation == .vertical
+        let scale = portrait ? min(1, face.width / naturalFace.width, face.height / naturalFace.height)
+                             : min(1, face.height / naturalFace.height)
         context.saveGState()
         defer { context.restoreGState() }
         context.translateBy(x: face.midX, y: face.midY)
@@ -58,8 +66,11 @@ enum SaveButtonDrawing {
         let iconWidth = symbol?.size.width ?? 0
         let gap: CGFloat = symbol != nil && style == .bookmarkAndText ? 4 : 0
         let left = -(iconWidth + gap + textSize.width) / 2
+        let iconHeight = symbol?.size.height ?? 0
+        let top = (iconHeight + gap + textSize.width) / 2
         if let symbol {
-            let iconRect = NSRect(x: left, y: -symbol.size.height / 2, width: iconWidth, height: symbol.size.height)
+            let iconRect = NSRect(x: portrait ? -iconWidth / 2 : left, y: portrait ? top - iconHeight : -iconHeight / 2,
+                                  width: iconWidth, height: iconHeight)
             if confirmation < 1 {
                 symbol.draw(in: iconRect, from: .zero, operation: .sourceOver, fraction: 1 - confirmation)
             }
@@ -68,8 +79,12 @@ enum SaveButtonDrawing {
             }
         }
         if style != .bookmarkOnly {
-            text.draw(at: NSPoint(x: left + iconWidth + gap, y: -textSize.height / 2),
-                      withAttributes: attributes)
+            if portrait {
+                context.translateBy(x: 0, y: top - iconHeight - gap - textSize.width / 2)
+                context.rotate(by: -.pi / 2)
+            }
+            let x = portrait ? -textSize.width / 2 : left + iconWidth + gap
+            text.draw(at: NSPoint(x: x, y: -textSize.height / 2), withAttributes: attributes)
         }
     }
 }

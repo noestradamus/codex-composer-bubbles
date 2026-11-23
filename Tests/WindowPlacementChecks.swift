@@ -142,6 +142,7 @@ enum WindowPlacementChecks {
     private static func checkVertical(on screen: ShelfDisplay, owner: CGRect, covering: [CGRect]) {
         let room = screen.visibleFrame
         let saveWidth: CGFloat = 76
+        let cell = BubbleGlass.portraitCell(for: .shortCaptions)
         for x in [room.minX + 4, room.midX, room.maxX - 25] {
             for y in [room.minY + 34, room.midY, room.maxY - 4] {
                 let pin = CGPoint(x: x, y: y)
@@ -150,13 +151,18 @@ enum WindowPlacementChecks {
                 var savedPosition: CGRect?
                 for count in [0, 1, 3, 12, 1_000] {
                     let layout = placement.layout(displayFrame: screen.frame, visibleFrame: room,
-                                                  count: count, emptySaveWidth: saveWidth, columnWidth: count == 0 ? 0 : 176)
-                    precondition(!layout.horizontal && room.contains(layout.frame))
+                                                  count: count, emptySaveWidth: saveWidth, portraitCell: cell)
+                    precondition(layout.controlOrientation == .vertical && !layout.horizontal && room.contains(layout.frame))
                     precondition(layout.header.intersection(layout.save).isEmpty && layout.save.intersection(layout.list).isEmpty)
                     precondition(layout.frame.minX + layout.header.minX == pin.x)
                     precondition(layout.frame.minY + layout.header.maxY == pin.y)
-                    precondition(layout.save.width == saveWidth && layout.save.height == BubbleGlass.rowHeight)
-                    precondition(layout.list.height == CGFloat(min(count, 5)) * BubbleGlass.rowHeight)
+                    precondition(layout.save.size == cell && layout.frame.width == cell.width)
+                    if count > 0 {
+                        precondition(layout.list.width == cell.width && layout.list.minX == layout.save.minX)
+                        precondition(layout.list.height >= cell.height && layout.list.height <= CGFloat(min(count, 5)) * cell.height)
+                    } else {
+                        precondition(layout.list.isEmpty && layout.frame.height == cell.height + GlassTabDrawing.controlSize.height + 2)
+                    }
                     let save = layout.save.offsetBy(dx: layout.frame.minX, dy: layout.frame.minY)
                     if let savedPosition { precondition(save == savedPosition) }
                     savedPosition = save
@@ -169,12 +175,12 @@ enum WindowPlacementChecks {
         let placement = ShelfPlacement(displayID: screen.id, grip: pin, displayFrame: screen.frame,
                                        horizontal: true, widthLimit: 325, laneWidth: 325)
         let exposed = placement.visibleRoom(on: screen, host: screen, window: owner, count: 8,
-                                            saveWidth: saveWidth, columnWidth: 176, avoiding: [], occludedBy: covering)!
-        let fallback = placement.layout(displayFrame: screen.frame, visibleFrame: exposed, count: 8, columnWidth: 176)
-        precondition(fallback.horizontal && covering.allSatisfy { !$0.intersects(fallback.frame) })
+                                            saveWidth: saveWidth, portraitCell: cell, avoiding: [], occludedBy: covering)!
+        let fallback = placement.layout(displayFrame: screen.frame, visibleFrame: exposed, count: 8, portraitCell: cell)
+        precondition(fallback.horizontal && fallback.controlOrientation == .horizontal && covering.allSatisfy { !$0.intersects(fallback.frame) })
         let safe = placement.visibleRoom(on: screen, host: screen, window: owner, count: 8,
-                                          saveWidth: saveWidth, columnWidth: 176, avoiding: [], occludedBy: [])!
-        let column = placement.layout(displayFrame: screen.frame, visibleFrame: safe, count: 8, columnWidth: 176)
+                                          saveWidth: saveWidth, portraitCell: cell, avoiding: [], occludedBy: [])!
+        let column = placement.layout(displayFrame: screen.frame, visibleFrame: safe, count: 8, portraitCell: cell)
         precondition(!column.horizontal && owner.contains(column.frame))
         precondition(column.frame.minX + column.header.minX == pin.x)
         print("Passed vertical fit, Save placement, stable pins and low-strip fallback.")

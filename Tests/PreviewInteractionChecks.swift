@@ -192,6 +192,13 @@ private extension BubblePanelController {
         present(items)
         precondition(!scroll.horizontal && scroll.canPan && panel.convertToScreen(move.frame) == tab)
         precondition(pills[1].frame.minY > pills[0].frame.minY && pills[1].frame.midX == pills[0].frame.midX)
+        let portrait = BubbleGlass.portraitCell(for: .shortCaptions)
+        precondition(pills[0].frame.size == portrait && save.frame.size == portrait)
+        precondition(save.orientation == .vertical && pills[0].orientation == .vertical)
+        for saveStyle in SaveButtonStyle.allCases {
+            setSaveStyle(saveStyle)
+            precondition(save.surface.size == pills[0].surface.size)
+        }
         PreviewFixture.click(pills[0])
         precondition(card.isVisible && selectedID == items[0].id && !panel.frame.intersects(card.frame))
 
@@ -225,10 +232,13 @@ private extension BubblePanelController {
         let added = SavedBubble(text: "A new draft.", chatKey: "test", number: 15)
         present([added] + items)
         precondition(!scroll.visibleSurface(of: pills.last!).isEmpty)
+        setStyle(.numbers)
+        precondition(save.frame.size == BubbleGlass.portraitCell(for: .numbers) && save.frame.size == pills[0].frame.size)
         precondition(NSApp.sendAction(switchLayout.action!, to: switchLayout.target, from: switchLayout))
         precondition(switchLayout.title == "Switch to Vertical")
         present([added] + items)
         precondition(scroll.horizontal && panel.convertToScreen(move.frame) == tab)
+        precondition(save.orientation == .horizontal && pills[0].surface.width > pills[0].surface.height)
         retire()
         print("Passed Save menu layout switching, vertical wheel, mouse pan, sideways export, preview and newest bubble reveal.")
     }
