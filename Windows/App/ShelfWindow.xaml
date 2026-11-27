@@ -16,19 +16,33 @@
             <Setter Property="Padding" Value="7,5"/>
             <Setter Property="BorderBrush" Value="{DynamicResource {x:Static SystemColors.ControlDarkBrushKey}}"/>
         </Style>
+        <Style x:Key="GlassSurface" TargetType="Border">
+            <Setter Property="CornerRadius" Value="9"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource {x:Static SystemColors.ControlDarkBrushKey}}"/>
+            <Setter Property="Background" Value="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"/>
+        </Style>
         <Style x:Key="BubbleButton" TargetType="Button">
-            <Setter Property="Padding" Value="12,6"/>
-            <Setter Property="Margin" Value="0,0,6,0"/>
+            <Setter Property="Padding" Value="10,3"/>
             <Setter Property="MaxWidth" Value="214"/>
-            <Setter Property="MinHeight" Value="34"/>
+            <Setter Property="Height" Value="40"/>
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="Face" CornerRadius="9"
-                                BorderThickness="1" BorderBrush="{DynamicResource {x:Static SystemColors.ControlDarkBrushKey}}"
-                                Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}"
-                                Padding="{TemplateBinding Padding}">
-                            <ContentPresenter VerticalAlignment="Center" HorizontalAlignment="Center" RecognizesAccessKey="False"/>
+                        <Border x:Name="Face" Style="{StaticResource GlassSurface}">
+                            <Grid>
+                                <Border CornerRadius="8" IsHitTestVisible="False">
+                                    <Border.Background>
+                                        <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                            <GradientStop Color="#28FFFFFF" Offset="0"/>
+                                            <GradientStop Color="#00FFFFFF" Offset="0.48"/>
+                                            <GradientStop Color="#09000000" Offset="1"/>
+                                        </LinearGradientBrush>
+                                    </Border.Background>
+                                </Border>
+                                <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center"
+                                                  HorizontalAlignment="Center" RecognizesAccessKey="False"/>
+                            </Grid>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
@@ -36,6 +50,15 @@
                             </Trigger>
                             <Trigger Property="IsKeyboardFocused" Value="True">
                                 <Setter TargetName="Face" Property="BorderBrush" Value="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Face" Property="BorderBrush" Value="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}"/>
+                            </Trigger>
+                            <Trigger Property="Tag" Value="preview">
+                                <Setter TargetName="Face" Property="BorderBrush" Value="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Face" Property="Opacity" Value="0.55"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -52,43 +75,79 @@
                 <TextBox x:Name="ChatLink" VerticalContentAlignment="Center" KeyDown="LinkKeyDown"
                          AutomationProperties.Name="Codex chat link" AutomationProperties.AutomationId="ChatLink"/>
             </DockPanel>
+            <CheckBox x:Name="LaunchWithCodex" Content="Start with Codex" Margin="0,9,0,0"
+                      Click="ToggleAutoLaunch"
+                      ToolTip="Open this shelf when the Windows ChatGPT and Codex app comes to the front."/>
         </StackPanel>
         <StackPanel x:Name="ShelfArea" Margin="0,0,0,14" Visibility="Collapsed">
-            <DockPanel Margin="0,0,0,7">
+            <DockPanel Margin="0,0,0,8">
                 <Button DockPanel.Dock="Right" Content="Change chat" Click="ChangeChat" Margin="6,0,0,0"/>
                 <TextBlock x:Name="ChatLabel" VerticalAlignment="Center" FontWeight="SemiBold"/>
             </DockPanel>
-            <TextBlock x:Name="EmptyShelf" Text="No saved bubbles in this chat." Visibility="Collapsed"
-                       Foreground="{DynamicResource {x:Static SystemColors.GrayTextBrushKey}}"/>
-            <ScrollViewer x:Name="BubbleScroll" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled"
-                          PreviewMouseWheel="ScrollBubbles" Focusable="False">
-                <StackPanel x:Name="BubbleRow" Orientation="Horizontal"/>
-            </ScrollViewer>
-            <Border x:Name="Preview" Margin="0,9,0,0" CornerRadius="9" BorderThickness="1" Padding="9"
-                    BorderBrush="{DynamicResource {x:Static SystemColors.ControlDarkBrushKey}}" Visibility="Collapsed">
-                <StackPanel>
-                    <TextBox x:Name="PreviewText" IsReadOnly="True" BorderThickness="0" TextWrapping="Wrap"
-                             VerticalScrollBarVisibility="Auto" MaxHeight="138"
-                             AutomationProperties.Name="Saved suggestion"/>
-                    <StackPanel Margin="0,7,0,0" Orientation="Horizontal" HorizontalAlignment="Right">
-                        <Button Content="Remove" Click="RemoveSelected"/>
-                        <Button Content="Copy" Click="CopySelected" Margin="6,0,0,0"/>
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition x:Name="RailColumn"/>
+                    <ColumnDefinition x:Name="PreviewColumn" Width="0"/>
+                </Grid.ColumnDefinitions>
+                <Grid x:Name="Rail" VerticalAlignment="Top">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition x:Name="BubbleColumn"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <ScrollViewer x:Name="BubbleScroll" Background="Transparent" PanningMode="HorizontalOnly"
+                                  HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled"
+                                  PreviewMouseWheel="ScrollBubbles" Focusable="False">
+                        <StackPanel x:Name="BubbleRow" Orientation="Horizontal"/>
+                    </ScrollViewer>
+                    <Button x:Name="SaveButton" Grid.Column="1" Style="{StaticResource BubbleButton}" IsEnabled="False"
+                            Click="SaveDraft" AutomationProperties.Name="Save" AutomationProperties.AutomationId="SaveDraft"
+                            ContextMenuService.ShowOnDisabled="True" ContextMenuOpening="SaveMenuOpening"
+                            ToolTip="Save a copy of this draft">
+                        <Button.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem x:Name="SwitchLayout" Header="Switch to Vertical" Click="ToggleOrientation"/>
+                                <MenuItem Header="Bubble style">
+                                    <MenuItem x:Name="ShowCaptions" Header="Short captions" IsCheckable="True" Click="ChooseCaptions"/>
+                                    <MenuItem x:Name="ShowNumbers" Header="Numbers" IsCheckable="True" Click="ChooseNumbers"/>
+                                </MenuItem>
+                                <MenuItem Header="Save button">
+                                    <MenuItem x:Name="ShowBookmarkAndText" Header="Bookmark + Save" IsCheckable="True" Click="ChooseBookmarkAndText"/>
+                                    <MenuItem x:Name="ShowBookmark" Header="Bookmark only" IsCheckable="True" Click="ChooseBookmark"/>
+                                    <MenuItem x:Name="ShowText" Header="Text only" IsCheckable="True" Click="ChooseText"/>
+                                </MenuItem>
+                            </ContextMenu>
+                        </Button.ContextMenu>
+                    </Button>
+                </Grid>
+                <Border x:Name="Preview" Grid.Row="1" Style="{StaticResource GlassSurface}"
+                        Margin="0,9,0,0" Padding="9" Visibility="Collapsed" VerticalAlignment="Top">
+                    <StackPanel>
+                        <TextBox x:Name="PreviewText" IsReadOnly="True" BorderThickness="0" TextWrapping="Wrap"
+                                 VerticalScrollBarVisibility="Auto" MaxHeight="138"
+                                 AutomationProperties.Name="Saved suggestion"/>
+                        <StackPanel Margin="0,7,0,0" Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button Content="Remove" Click="RemoveSelected"/>
+                            <Button Content="Copy" Click="CopySelected" Margin="6,0,0,0"/>
+                        </StackPanel>
                     </StackPanel>
-                </StackPanel>
-            </Border>
+                </Border>
+            </Grid>
             <Button x:Name="UndoButton" Content="Undo remove" Click="UndoRemove" Margin="0,7,0,0"
                     HorizontalAlignment="Left" Visibility="Collapsed"/>
         </StackPanel>
         <TextBlock Text="Draft to save" FontWeight="SemiBold" Margin="0,0,0,5"/>
-        <TextBox x:Name="Draft" MinHeight="80" MaxHeight="135" AcceptsReturn="True" TextWrapping="Wrap"
+        <TextBox x:Name="Draft" MinHeight="66" MaxHeight="110" AcceptsReturn="True" TextWrapping="Wrap"
                  VerticalScrollBarVisibility="Auto" TextChanged="DraftChanged" AllowDrop="True"
                  AutomationProperties.Name="Draft to save" AutomationProperties.AutomationId="Draft"/>
-        <DockPanel Margin="0,9,0,0">
-            <Button x:Name="SaveButton" DockPanel.Dock="Right" Content="Save" IsEnabled="False"
-                    Click="SaveDraft" Margin="8,0,0,0" AutomationProperties.AutomationId="SaveDraft"/>
-            <TextBlock x:Name="Status" Text="Paste the link to the Codex chat you want to use."
-                       VerticalAlignment="Center" TextWrapping="Wrap"
-                       AutomationProperties.LiveSetting="Polite"/>
-        </DockPanel>
+        <TextBlock x:Name="Status" Margin="0,9,0,0" Text="Paste the link to the Codex chat you want to use."
+                   VerticalAlignment="Center" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
     </StackPanel>
 </Window>

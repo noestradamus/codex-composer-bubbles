@@ -38,9 +38,16 @@ public sealed class BubbleStore(string directory)
         return Add(chat, new SavedBubble(Guid.NewGuid(), text, CodexChatLink.Key(chat), null));
     }
 
-    public SavedBubble? Remove(Guid chat, Guid id) => Update<SavedBubble?>(shelf =>
+    public bool IsCurrent(Guid chat, SavedBubble bubble) => BelongsTo(bubble, chat) && Load().Bubbles.Contains(bubble);
+
+    public SavedBubble? Remove(Guid chat, Guid id) => Remove(chat, id, null);
+
+    public SavedBubble? RemoveMatching(Guid chat, SavedBubble expected) => Remove(chat, expected.Id, expected);
+
+    private SavedBubble? Remove(Guid chat, Guid id, SavedBubble? expected) => Update<SavedBubble?>(shelf =>
     {
-        var index = shelf.Bubbles.FindIndex(bubble => bubble.Id == id && BelongsTo(bubble, chat));
+        var index = shelf.Bubbles.FindIndex(bubble => bubble.Id == id && BelongsTo(bubble, chat) &&
+            (expected is null || bubble == expected));
         if (index < 0)
             return (null, false);
         var bubble = shelf.Bubbles[index];
@@ -100,7 +107,8 @@ public sealed class BubbleStore(string directory)
         catch (DirectoryNotFoundException) { return EmptyShelf(); }
         catch (JsonException error) { throw new InvalidDataException("The bubble file could not be read.", error); }
 
-        if (shelf.Version != 1 || shelf.Bubbles is null || shelf.Bubbles.Any(bubble => bubble?.Text is null))
+        if (shelf.Version != 1 || shelf.Bubbles is null || shelf.Bubbles.Any(bubble => bubble?.Text is null) ||
+            shelf.Bubbles.Select(bubble => bubble.Id).Distinct().Count() != shelf.Bubbles.Count)
             throw new InvalidDataException("The bubble file has an unsupported format.");
 
         FillMissingNumbers(shelf);

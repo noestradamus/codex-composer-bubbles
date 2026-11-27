@@ -16,9 +16,34 @@ foreach (var bad in new[]
 })
     Check(!CodexChatLink.TryParse(bad, out _), $"reject {bad}");
 
+var drafts = new ShelfDraft { Text = "First draft" };
+drafts.Link(chatA);
+drafts.Suspend();
+drafts.Link(chatB);
+Check(drafts.Text == "", "other chat cannot inherit the suspended draft");
+drafts.Text = "Second draft";
+drafts.Link(chatA);
+Check(drafts.Text == "First draft", "relink the same chat and restore its draft");
+drafts.Suspend();
+drafts.Text = "New explicit draft";
+drafts.Link(chatB);
+Check(drafts.Text == "New explicit draft", "new input overrides the old draft only on explicit link");
+
+var shortTitle = BubbleLabels.ShortTitle("\nReview the flaky unit tests\r\nFull text continues. 修正 👩🏽‍💻");
+Check(shortTitle == "Review the flaky unit tests" &&
+    BubbleLabels.PortraitWord(shortTitle) == "Tests" &&
+    BubbleLabels.PortraitWord("Review logs from yesterday") == "Logs", "short hover titles and single-word labels");
+Check(BubbleLabels.Stacked("修👩🏽‍💻正", 3) == "修\n👩🏽‍💻\n正" &&
+    BubbleLabels.Stacked("Save", 4) == "S\na\nv\ne", "upright graphemes and Save letters");
+
 var temp = Directory.CreateTempSubdirectory("composer-bubbles-windows-");
 try
 {
+    var settingsFile = Path.Combine(temp.FullName, "settings.json");
+    Check(ShelfOptions.Load(settingsFile) == new ShelfOptions(), "absent settings keep horizontal defaults");
+    var settings = new ShelfOptions(ShelfOrientation.Vertical, BubbleStyle.Numbers, SaveStyle.BookmarkOnly, 30, 15);
+    settings.Save(settingsFile);
+    Check(ShelfOptions.Load(settingsFile) == settings, "layout, appearance and position survive restart");
     var store = new BubbleStore(temp.FullName);
     var otherInstance = new BubbleStore(temp.FullName);
     var composed = "  keep café\r\n\t次の手順 👩‍💻  ";
@@ -31,6 +56,9 @@ try
     Check(otherInstance.Visible(chatA).SequenceEqual([a1, a2]), "exact Unicode, spaces and line breaks on reload");
     Check(otherInstance.Visible(chatB).SequenceEqual([b1]), "other chat gets its own bubble");
     Check(store.Remove(chatB, a1.Id) is null, "wrong chat cannot remove");
+    Check(!store.IsCurrent(chatB, a1) && !store.IsCurrent(chatA, a1 with { Text = "changed" }) &&
+        store.RemoveMatching(chatA, a1 with { Text = "changed" }) is null && store.IsCurrent(chatA, a1),
+        "changed snapshots cannot be previewed, copied, dragged or removed");
     var removed = store.Remove(chatB, b1.Id);
     Check(removed == b1 && store.Visible(chatB).Count == 0, "remove last bubble");
     Expect<InvalidOperationException>(() => store.Restore(chatA, b1), "wrong chat cannot restore");
@@ -65,7 +93,7 @@ try
     File.WriteAllText(file, futureFile);
     Expect<InvalidDataException>(() => store.Save(chatA, "test"), "reject unknown file version");
     Check(File.ReadAllText(file) == futureFile, "file survives invalid write");
-    Console.WriteLine("Passed Codex links, chat isolation, exact text, numbering, Remove/Undo and Mac v1 data.");
+    Console.WriteLine("Passed Codex links, draft isolation, snapshot safety, labels, preferences, numbering, Remove/Undo and Mac v1 data.");
 }
 finally
 {

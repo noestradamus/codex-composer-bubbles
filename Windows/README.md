@@ -1,36 +1,32 @@
 # Composer Bubbles for Windows
 
-This first preview is a small Windows shelf linked explicitly to one Codex chat. It stores drafts locally, shows full previews, and drags or copies a saved bubble as text. Leaving the shelf clears the link and hides its bubbles. You can reopen that chat by pasting its link again.
+The Windows preview keeps saved Codex drafts in a shelf linked to an explicit chat. The data stays on your PC.
 
-## Try it on Windows
+## Try the preview
 
-1. Extract the preview ZIP and open **ComposerBubbles.exe**. Choose the x64 ZIP for a 64-bit Intel or AMD PC or the Arm64 ZIP for a Windows on Arm PC. The ZIP includes the .NET runtime.
-2. In Codex, copy a draft or accept a composer prediction and copy its text. Paste it into **Draft to save** in Composer Bubbles. Return to that Codex chat and try **Ctrl+Alt+L** to copy its chat deep link, or look for **Copy deeplink** in Codex.
-3. Paste the link into **Codex chat link** in Composer Bubbles, click **Open shelf**, then **Save**. The draft in Codex stays editable.
-4. Click a bubble to read it. Drag it onto an empty Codex composer, or choose **Copy** and paste it there. Edit the restored text before sending.
-5. Copy a second chat’s link and open its shelf. The first chat’s bubbles should appear again only when you reopen the first link. You can remove the last bubble, reopen that chat, and choose **Undo remove** while the app is still running.
+1. Extract the entire ZIP and run **ComposerBubbles.exe**. Choose x64 for Intel or AMD PCs or Arm64 for Windows on Arm. The ZIP includes the .NET runtime.
+2. In Codex, copy a draft or accept a composer prediction and copy its text. Paste it into **Draft to save** in Composer Bubbles.
+3. In Codex, try **Ctrl+Alt+L** or use **Copy deeplink** to copy the chat link. Paste that link into Composer Bubbles, select **Open shelf**, then choose **Save**.
+4. Use **Save → Switch to Vertical** from the right-click menu to try the upright shelf. The same menu offers numbered bubbles and three Save styles. Hover over a bubble for a short title, click to read the full draft, and click it again to close. The layout and appearance choices persist across restarts.
+5. Wheel, swipe, or drag along the shelf to browse. Drag a bubble across the shelf toward the composer to restore editable text. Use **Alt** to start a text drag in any direction. **Copy** is available in the full preview.
+6. Reopen a chat’s link to see its bubbles and the draft you left in the shelf during this session. Removing a bubble offers **Undo remove** in its own chat.
 
-The Codex link and drag-and-drop steps need a live Windows check. You can exercise the shelf itself with two sample links if your build of Codex doesn’t expose a chat link:
+**Start with Codex** is available on the link screen. Enable it to run a small background watcher at Windows sign-in. It opens the shelf when the official Microsoft Store ChatGPT/Codex desktop window comes to the front. Extract the ZIP to a permanent folder before turning it on. Turn off the checkbox before moving the folder.
+
+Without a Codex chat link, try two fixture links to exercise the shelf and verify separation:
 
 - `codex://threads/11111111-1111-4111-8111-111111111111`
 - `codex://threads/22222222-2222-4222-8222-222222222222`
 
-Preview data lives in `%LOCALAPPDATA%\Composer Bubbles\bubbles.json`.
+Saved bubbles live in `%LOCALAPPDATA%\Composer Bubbles\bubbles.json`. Appearance and placement live in `settings.json` in the same folder.
 
-## What carries over
+## Platform validation
 
-| Reuse from macOS | Build for Windows |
-| --- | --- |
-| Version 1 shelf JSON, Codex thread IDs, exact text comparison, per-chat numbering, Remove and Undo rules | C# persistence and locking with the Windows local data directory |
-| App icon and save → preview → restore workflow | WPF windows, controls, preview text and Unicode drag-and-drop |
-| The rule that unknown chats get no bubbles, plus the Mac regression scenarios | UI Automation discovery of the composer and chat identity, then Win32 window ownership, monitor/DPI placement and focus handling |
-| Release checklist and local-data expectations | Windows tray and hotkey integration, signed packaging and update flow |
+The preview cross-builds for x64 and Arm64. The Codex link shortcut, touchpad, drag-and-drop, positioning, and startup watcher need a live Windows check. The Windows shelf still asks for an explicit link after focus leaves it. To support automatic chat detection and one-click capture, verify how the Windows Codex composer and active chat appear in [Accessibility Insights Live Inspect](https://learn.microsoft.com/en-us/windows/apps/design/accessibility/accessibility-testing) before reading either automatically.
 
-The macOS Accessibility tree and AppKit code use platform-specific interfaces. Before wiring up one-click capture, inspect the actual Windows Codex composer and the selected chat with Microsoft’s [Accessibility Insights Live Inspect](https://learn.microsoft.com/en-us/windows/apps/design/accessibility/accessibility-testing). Check whether chat IDs are available through chat switches and whether the composer exposes readable text. Automatic Save can then copy a verified draft while leaving the composer alone.
+## Build
 
-## Build and verify
-
-Use the .NET 10 SDK. The WPF project can cross-build on macOS. Test the desktop interaction and build public release packages on Windows.
+Use the .NET 10 SDK.
 
 ```text
 dotnet run --project Windows/Tests/ComposerBubbles.Core.Checks.csproj
